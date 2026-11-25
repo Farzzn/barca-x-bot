@@ -46,6 +46,7 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--test-context", action="store_true", help="Print live ESPN/RSS context and exit.")
     parser.add_argument("--test-workflow", action="store_true", help="Print exact workflow decision and exit.")
     parser.add_argument("--sync-catalog", action="store_true", help="Sync images -> assets/catalog.json and exit.")
+    parser.add_argument("--sync-metrics", action="store_true", help="Fetch latest Views/Likes/Replies from X API for live posts and save to DB.")
     parser.add_argument("--check", action="store_true", help="Run preflight health check and exit.")
     return parser.parse_args(argv)
 
@@ -72,6 +73,41 @@ def main(argv: List[str] | None = None) -> int:
         for asset in catalog.assets.values():
             source = "GitHub" if asset.github_repo_path else "Local"
             print(f"  - [{source}] {asset.id}: {asset.description} [{asset.relative_path}]")
+        return 0
+
+    if args.sync_metrics:
+        from app.x_client import X_API_BASE
+
+        store = HistoryStore(settings)
+        live = store.get_recent_posts(limit=50, include_dry_runs=False)
+        ids = list(dict.fromkeys(r.tweet_id for r in live if r.tweet_id and r.tweet_id.isdigit()))
+        if not ids:
+            print("No live tweets found to sync.")
+            return 0
+        xc = XClient(settings)
+        resp = xc.session.get(
+            f"{X_API_BASE}/tweets",
+            params={"ids": ",".join(ids[:50]), "tweet.fields": "public_metrics"},
+            auth=xc.auth,
+            timeout=20,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("data") or []
+        for item in items:
+            m = item.get("public_metrics") or {}
+            store.update_metrics_by_tweet_id(
+                tweet_id=item["id"],
+                impressions=int(m.get("impression_count") or 0),
+                likes=int(m.get("like_count") or 0),
+                replies=int(m.get("reply_count") or 0),
+                retweets=int(m.get("retweet_count") or 0),
+                quotes=int(m.get("quote_count") or 0),
+            )
+            print(
+                f"  Synced tweet {item['id']}: views={m.get('impression_count', 0)}, "
+                f"likes={m.get('like_count', 0)}, replies={m.get('reply_count', 0)}"
+            )
+        print(f"Updated reach metrics for {len(items)} live post(s).")
         return 0
 
     if args.check:

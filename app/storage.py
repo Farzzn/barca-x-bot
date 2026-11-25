@@ -533,6 +533,35 @@ class HistoryStore:
         recent = self.get_recent_posts(limit=1, include_dry_runs=False)
         return recent[0].created_at_utc if recent else None
 
+    def update_metrics_by_tweet_id(
+        self, tweet_id: str, impressions: int, likes: int, replies: int, retweets: int, quotes: int
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        p = self._placeholder()
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                UPDATE x_post_history
+                SET impressions = {p}, likes = {p}, replies = {p}, retweets = {p}, quotes = {p}, metrics_updated_at = {p}
+                WHERE tweet_id = {p}
+                """,
+                (
+                    int(impressions),
+                    int(likes),
+                    int(replies),
+                    int(retweets),
+                    int(quotes),
+                    now if self.use_postgres else now.isoformat(),
+                    str(tweet_id),
+                ),
+            )
+            conn.commit()
+            cur.close()
+        finally:
+            conn.close()
+
 
 def decide_run_action(
     behavior: RuntimeBehaviorConfig,

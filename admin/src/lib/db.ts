@@ -314,6 +314,47 @@ export async function updatePostMetrics(
   );
 }
 
+export async function getLiveTweetIds(limit = 50): Promise<string[]> {
+  if (!isDatabaseConfigured()) return [];
+  await ensureSchema();
+  const pool = getPool();
+  const res = await pool.query(
+    `
+    SELECT DISTINCT tweet_id
+    FROM x_post_history
+    WHERE dry_run = FALSE AND tweet_id ~ '^[0-9]+$'
+    ORDER BY tweet_id DESC
+    LIMIT $1
+    `,
+    [limit]
+  );
+  return res.rows.map((r) => String(r.tweet_id));
+}
+
+export async function updateMetricsByTweetId(
+  tweetId: string,
+  metrics: { impressions: number; likes: number; replies: number; retweets: number; quotes: number }
+): Promise<void> {
+  if (!isDatabaseConfigured()) return;
+  await ensureSchema();
+  const pool = getPool();
+  await pool.query(
+    `
+    UPDATE x_post_history
+    SET impressions = $2, likes = $3, replies = $4, retweets = $5, quotes = $6, metrics_updated_at = NOW()
+    WHERE tweet_id = $1
+    `,
+    [
+      tweetId,
+      Math.max(0, Math.floor(metrics.impressions || 0)),
+      Math.max(0, Math.floor(metrics.likes || 0)),
+      Math.max(0, Math.floor(metrics.replies || 0)),
+      Math.max(0, Math.floor(metrics.retweets || 0)),
+      Math.max(0, Math.floor(metrics.quotes || 0)),
+    ]
+  );
+}
+
 export async function getActivityData(limit = 100): Promise<{
   posts: PostHistoryRow[];
   clubAnalytics: ClubAnalyticsRow[];

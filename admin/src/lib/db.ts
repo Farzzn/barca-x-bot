@@ -43,6 +43,7 @@ export const ALL_ARCHETYPES = [
   { id: "post_drop_meltdown", label: "Draw/Loss Meltdown", desc: "Instant rage, 'tactically empty', 'sack him'" },
   { id: "rival_comparison_bait", label: "Rival Comparison Bait", desc: "Side-by-side Barça vs Madrid player civil wars" },
   { id: "rival_match_slander", label: "Rival Match Slander", desc: "Madrid/UCL jinxes, haram ball & ref banter" },
+  { id: "epl_intensity_slander", label: "EPL 'Intensity League' Slander", desc: "Mock Premier League clubs & push La Liga > EPL" },
   { id: "would_you_rather", label: "Would You Rather", desc: "2-option Barça transfer & squad dilemmas" },
   { id: "unpopular_one_percent", label: "Unpopular 1% Takes", desc: "Deadpan contrarian Culer hot takes" },
 ] as const;

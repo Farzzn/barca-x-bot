@@ -77,7 +77,22 @@ ARCHETYPES: Dict[str, PostArchetype] = {
             "(a) Confident jinx prediction before their match ('I don't see Real Madrid getting anything from [Opponent] today... [Rival] 1-3 [Opponent]. End.'), "
             "(b) Referee/VAR conspiracy banter ('The refs have followed Real Madrid from La Liga to the UCL...'), OR "
             "(c) Roasting their style as 'haram ball' / PR merchants after they drop points or struggle. "
-            "Attach 1 frustrated/complaining rival player or referee/VAR image if available."
+            "Attach 1 laughing Barça player or frustrated rival image if available."
+        ),
+    ),
+    "epl_intensity_slander": PostArchetype(
+        name="epl_intensity_slander",
+        description="Mocking the Premier League ('Intensity League') & pushing La Liga supremacy",
+        preferred_image_count=1,
+        prompt_instructions=(
+            "Ruthlessly mock the English Premier League — ALWAYS call it the 'Intensity League' (Football Twitter's banter name for EPL) — "
+            "and push the narrative that La Liga is miles ahead of the EPL in real technical football and European pedigree! "
+            "If the live context shows ANY La Liga club beating an EPL club (or an EPL club dropping points/losing in Europe like Arsenal, Man City, Aston Villa, Liverpool, Chelsea, Man Utd), "
+            "cook them HARD with blunt lines like 'Intensity League teams are trash', 'all that billion-pound cardio just to get schooled by real football', "
+            "or mocking how EPL fans brag about 'pace and physicality' while getting exposed in Europe. "
+            "You can also mock EPL clubs by pointing out how players like Anthony Gordon escaped the Intensity League to finally play real football at Barça, "
+            "or how Pedri/La Masia kids would walk into every EPL midfield blindfolded. "
+            "Attach a laughing/confident Barça image (like Pau Cubarsi laughing, Anthony Gordon confident, or Pedri celebrating) if available!"
         ),
     ),
     "would_you_rather": PostArchetype(
@@ -139,15 +154,17 @@ STATE_ARCHETYPE_WEIGHTS: Dict[MatchState, List[tuple[str, int]]] = {
         ("unpopular_one_percent", 10),
     ],
     MatchState.RIVAL_MATCH_DRAMA: [
-        ("rival_match_slander", 60),
-        ("rival_comparison_bait", 25),
-        ("unpopular_one_percent", 15),
+        ("rival_match_slander", 40),
+        ("epl_intensity_slander", 35),
+        ("rival_comparison_bait", 15),
+        ("unpopular_one_percent", 10),
     ],
     MatchState.OFF_DAY_BANTER: [
-        ("rival_comparison_bait", 35),
-        ("rival_match_slander", 25),
-        ("would_you_rather", 20),
-        ("unpopular_one_percent", 20),
+        ("epl_intensity_slander", 30),
+        ("rival_comparison_bait", 25),
+        ("rival_match_slander", 15),
+        ("would_you_rather", 15),
+        ("unpopular_one_percent", 15),
     ],
 }
 
@@ -160,7 +177,8 @@ CHAOS_LEVEL_NOTES = {
 SYSTEM_INSTRUCTION = """You run an unapologetic, chaotic, sharp-tongued FC Barcelona fan account on X (Football Twitter).
 
 YOUR VOICE & STYLE (CRITICAL):
-- Sound 100% like a real, terminally online Culer on Football Twitter — dramatic, biased, funny, overconfident before kickoff, instantly melting down if Barça drop points, and ruthless when bantering Real Madrid, Atlético Madrid, Man City, Arsenal, and PSG.
+- Sound 100% like a real, terminally online Culer on Football Twitter — dramatic, biased, funny, overconfident before kickoff, instantly melting down if Barça drop points, and ruthless when bantering Real Madrid, Atlético Madrid, and English Premier League clubs (Arsenal, Man City, Liverpool, Chelsea, Man Utd, Aston Villa).
+- CORE LEAGUE AGENDA: You believe La Liga is miles ahead of the English Premier League in real football quality. Mock the EPL as the "Intensity League" (overhyped billion-pound cardio/kick-and-rush merchants who get exposed by Spanish technique in Europe). Whenever a La Liga club beats an EPL team or an EPL team embarrasses itself in Europe, cook them ruthlessly ("Intensity League teams are trash").
 - Short, punchy paragraphs separated by blank lines. Sometimes a blunt 1-liner or ALL CAPS burst. Occasionally end a bold claim with "End." for comic finality.
 - Make rival fans feel compelled to quote-tweet or argue in the replies by taking strong, specific football stances (stats, trophies, tactics, big-game performances, refereeing decisions, transfers).
 
@@ -180,6 +198,7 @@ def choose_archetype(
     recent_archetypes: List[str],
     forced_archetype: Optional[str] = None,
     enabled_archetypes: Optional[List[str]] = None,
+    boost_epl_slander: bool = False,
 ) -> PostArchetype:
     """Pick the best post archetype for the current match state while respecting Admin toggles."""
     if forced_archetype:
@@ -189,7 +208,12 @@ def choose_archetype(
         return ARCHETYPES[forced_archetype]
 
     allowed = set(enabled_archetypes) if enabled_archetypes else set(ARCHETYPES.keys())
-    weighted = STATE_ARCHETYPE_WEIGHTS.get(match_state, STATE_ARCHETYPE_WEIGHTS[MatchState.OFF_DAY_BANTER])
+    weighted = list(STATE_ARCHETYPE_WEIGHTS.get(match_state, STATE_ARCHETYPE_WEIGHTS[MatchState.OFF_DAY_BANTER]))
+    if boost_epl_slander and "epl_intensity_slander" in allowed:
+        # La Liga just beat an EPL side — heavily prioritize cooking the Intensity League!
+        weighted = [(n, 75 if n == "epl_intensity_slander" else w) for n, w in weighted]
+        if not any(n == "epl_intensity_slander" for n, _ in weighted):
+            weighted.append(("epl_intensity_slander", 75))
     filtered = [(name, w) for name, w in weighted if name in allowed]
     if not filtered:
         # Fall back to any enabled archetype if admin disabled all state defaults

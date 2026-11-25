@@ -31,6 +31,8 @@ USER_AGENT = "BarcaXBot/1.1 (+https://github.com/local/barca-x-bot)"
 ESPN_LEAGUES = [
     ("esp.1", "La Liga"),
     ("uefa.champions", "UEFA Champions League"),
+    ("uefa.europa", "UEFA Europa League"),
+    ("eng.1", "Premier League"),
     ("esp.copa_del_rey", "Copa del Rey"),
     ("esp.super_cup", "Supercopa de Espana"),
 ]
@@ -43,12 +45,49 @@ RSS_FEEDS = [
 ]
 
 BARCA_ALIASES = {"barcelona", "fc barcelona", "barca"}
+LALIGA_CLUBS = {
+    "barcelona",
+    "fc barcelona",
+    "real madrid",
+    "atletico madrid",
+    "atlético madrid",
+    "athletic club",
+    "athletic bilbao",
+    "real sociedad",
+    "villarreal",
+    "real betis",
+    "sevilla",
+    "girona",
+    "valencia",
+    "celta vigo",
+    "osasuna",
+    "rayo vallecano",
+}
+EPL_CLUBS = {
+    "manchester city",
+    "arsenal",
+    "liverpool",
+    "chelsea",
+    "manchester united",
+    "tottenham",
+    "aston villa",
+    "newcastle",
+    "nottingham forest",
+    "brighton",
+    "west ham",
+}
 RIVAL_ALIASES = {
     "real madrid",
     "atletico madrid",
     "atlético madrid",
     "manchester city",
     "arsenal",
+    "liverpool",
+    "chelsea",
+    "manchester united",
+    "tottenham",
+    "aston villa",
+    "newcastle",
     "paris saint-germain",
     "psg",
     "bayern munich",
@@ -118,6 +157,14 @@ class MatchInfo:
     def involves_rival(self) -> bool:
         return self._is_rival(self.home_team) or self._is_rival(self.away_team)
 
+    @property
+    def involves_epl(self) -> bool:
+        return self._is_epl(self.home_team) or self._is_epl(self.away_team)
+
+    @property
+    def involves_laliga(self) -> bool:
+        return self._is_laliga(self.home_team) or self._is_laliga(self.away_team)
+
     @staticmethod
     def _is_barca(name: str) -> bool:
         low = name.lower()
@@ -127,6 +174,40 @@ class MatchInfo:
     def _is_rival(name: str) -> bool:
         low = name.lower()
         return any(alias in low for alias in RIVAL_ALIASES)
+
+    @staticmethod
+    def _is_epl(name: str) -> bool:
+        low = name.lower()
+        return any(club in low for club in EPL_CLUBS)
+
+    @staticmethod
+    def _is_laliga(name: str) -> bool:
+        low = name.lower()
+        return any(club in low for club in LALIGA_CLUBS)
+
+    def laliga_beat_epl(self) -> bool:
+        """True if a La Liga side beat (or is currently beating) an EPL club."""
+        if not (self.involves_laliga and self.involves_epl):
+            return False
+        if self.home_score is None or self.away_score is None:
+            return False
+        if self._is_laliga(self.home_team) and self._is_epl(self.away_team):
+            return self.home_score > self.away_score
+        if self._is_laliga(self.away_team) and self._is_epl(self.home_team):
+            return self.away_score > self.home_score
+        return False
+
+    def epl_dropped_in_europe(self) -> bool:
+        """True if an EPL club drew or lost in UCL/UEL."""
+        if "UEFA" not in self.competition or not self.involves_epl:
+            return False
+        if self.home_score is None or self.away_score is None:
+            return False
+        if self._is_epl(self.home_team) and not self._is_epl(self.away_team):
+            return self.home_score <= self.away_score
+        if self._is_epl(self.away_team) and not self._is_epl(self.home_team):
+            return self.away_score <= self.home_score
+        return False
 
     def barca_outcome(self) -> Optional[str]:
         """Return 'win', 'draw', or 'loss' from Barca's perspective if scores exist."""
@@ -177,6 +258,11 @@ class LiveFootballContext:
     rival_matches: List[MatchInfo] = field(default_factory=list)
     headlines: List[str] = field(default_factory=list)
     post_match_news: List[str] = field(default_factory=list)
+    epl_slander_alerts: List[str] = field(default_factory=list)
+
+    @property
+    def has_laliga_beat_epl(self) -> bool:
+        return any(a.startswith("LA LIGA OWNAGE") for a in self.epl_slander_alerts)
 
     @property
     def is_matchday_hot(self) -> bool:
@@ -216,9 +302,13 @@ class LiveFootballContext:
             for m in self.barca_matches[:4]:
                 lines.append(f"  - {m.summary_line()}")
         if self.rival_matches:
-            lines.append("Recent & Upcoming Rival Matches (Real Madrid / Atleti / UCL Rivals):")
-            for m in self.rival_matches[:5]:
+            lines.append("Recent & Upcoming Rival Matches (Real Madrid / Atleti / EPL 'Intensity League' / UCL):")
+            for m in self.rival_matches[:6]:
                 lines.append(f"  - {m.summary_line()}")
+        if self.epl_slander_alerts:
+            lines.append("EPL 'INTENSITY LEAGUE' SLANDER ALERTS (PRIME AMMO FOR MOCKING THE PREMIER LEAGUE):")
+            for alert in self.epl_slander_alerts[:5]:
+                lines.append(f"  - {alert}")
         if self.post_match_news:
             lines.append("Breaking Live / Post-Match FC Barcelona News:")
             for item in self.post_match_news[:6]:
@@ -491,6 +581,18 @@ def fetch_live_context(now: Optional[datetime] = None) -> LiveFootballContext:
         opponent = focus_match.opponent_of_barca() if focus_match else None
         post_match_news = fetch_post_match_google_news(opponent)
 
+    epl_slander_alerts: List[str] = []
+    for m in barca_matches + rival_matches:
+        if m.status_state in {"in", "post"} and timedelta(hours=-1) <= (current - m.kickoff_utc) <= timedelta(hours=36):
+            if m.laliga_beat_epl():
+                epl_slander_alerts.append(
+                    f"LA LIGA OWNAGE OVER INTENSITY LEAGUE: {m.summary_line()} — cook the EPL mercilessly!"
+                )
+            elif m.epl_dropped_in_europe():
+                epl_slander_alerts.append(
+                    f"INTENSITY LEAGUE FLOP IN EUROPE: {m.summary_line()} — mock EPL hype!"
+                )
+
     return LiveFootballContext(
         fetched_at_utc=current,
         match_state=match_state,
@@ -499,4 +601,5 @@ def fetch_live_context(now: Optional[datetime] = None) -> LiveFootballContext:
         rival_matches=rival_matches,
         headlines=headlines,
         post_match_news=post_match_news,
+        epl_slander_alerts=epl_slander_alerts,
     )

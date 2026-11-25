@@ -1,4 +1,200 @@
 {
-  "note": "Auto-synced from assets/images/. Edit subject/club/mood/description to improve LLM image matching.",
-  "images": []
+  "note": "Managed by Barca X Admin UI & barca-x-bot. Synced live with GitHub.",
+  "images": [
+    {
+      "id": "barca_squad_celebrating",
+      "relative_path": "barca/barca_squad_celebrating.jpg",
+      "category": "barca",
+      "subject": "Barca Squad (Fermin Lopez, Anthony Gordon, Marc Bernal, Raphinha)",
+      "club": "FC Barcelona",
+      "mood": "celebrating",
+      "description": "FC Barcelona squad (Fermin Lopez #7, Anthony Gordon #17, Marc Bernal #22, Raphinha) celebrating a goal together in the mint kit — great for team hype, pre-match confidence, and La Liga superiority.",
+      "tags": [
+        "barca",
+        "fc_barcelona",
+        "squad",
+        "fermin",
+        "gordon",
+        "bernal",
+        "raphinha",
+        "celebrating",
+        "hype"
+      ]
+    },
+    {
+      "id": "barca_pedri_smiling",
+      "relative_path": "barca/pedri_smiling.jpg",
+      "category": "barca",
+      "subject": "Pedri",
+      "club": "FC Barcelona",
+      "mood": "smiling",
+      "description": "Pedri with silver hair smiling warmly in the FC Barcelona home kit holding 24 birthday candles — ideal for Pedri praise, birthday hype, and midfield comparisons.",
+      "tags": [
+        "barca",
+        "fc_barcelona",
+        "pedri",
+        "smiling",
+        "midfield",
+        "ballon_dor"
+      ]
+    },
+    {
+      "id": "barca_joan_garcia_szczesny_focused",
+      "relative_path": "barca/joan_garcia_szczesny_focused.jpg",
+      "category": "barca",
+      "subject": "Joan Garcia & Wojciech Szczesny",
+      "club": "FC Barcelona",
+      "mood": "focused",
+      "description": "FC Barcelona goalkeepers Joan Garcia (#1) diving in training while Wojciech Szczesny watches — great for clean-sheet predictions, GK banter, or defensive meltdowns.",
+      "tags": [
+        "barca",
+        "fc_barcelona",
+        "joan_garcia",
+        "szczesny",
+        "goalkeeper",
+        "focused"
+      ]
+    },
+    {
+      "id": "barca_anthony_gordon_confident",
+      "relative_path": "barca/anthony_gordon_confident.jpg",
+      "category": "barca",
+      "subject": "Anthony Gordon",
+      "club": "FC Barcelona",
+      "mood": "confident",
+      "description": "Anthony Gordon (#17) looking calm and confident in FC Barcelona training gear — elite for mocking Premier League 'Intensity League' clubs since he escaped EPL for real football at Barca.",
+      "tags": [
+        "barca",
+        "fc_barcelona",
+        "anthony_gordon",
+        "gordon",
+        "confident",
+        "epl",
+        "intensity_league"
+      ]
+    },
+    {
+      "id": "managers_hansi_flick_serious",
+      "relative_path": "managers/hansi_flick_serious.png",
+      "category": "managers",
+      "subject": "Hansi Flick",
+      "club": "FC Barcelona",
+      "mood": "serious",
+      "description": "FC Barcelona manager Hansi Flick staring intensely on the touchline in a dark navy Barca jacket — works for BOTH tactical mastermind pre-match hype and 'tactically empty' draw/loss meltdowns.",
+      "tags": [
+        "managers",
+        "fc_barcelona",
+        "hansi_flick",
+        "flick",
+        "serious",
+        "angry",
+        "tactics"
+      ]
+    },
+    {
+      "id": "barca_frenkie_de_jong_serious",
+      "relative_path": "barca/frenkie_de_jong_serious.jpg",
+      "category": "barca",
+      "subject": "Frenkie de Jong",
+      "club": "FC Barcelona",
+      "mood": "serious",
+      "description": "Frenkie de Jong at a UEFA Champions League press conference looking calm and unbothered — great for UCL hype, midfield superiority over EPL/Madrid, or 'unpopular 1%' takes.",
+      "tags": [
+        "barca",
+        "fc_barcelona",
+        "frenkie_de_jong",
+        "de_jong",
+        "serious",
+        "ucl",
+        "midfield"
+      ]
+    },
+    {
+      "id": "barca_raphinha_cold",
+      "relative_path": "barca/raphinha_cold.png",
+      "category": "barca",
+      "subject": "Raphinha",
+      "club": "FC Barcelona",
+      "mood": "cold",
+      "description": "Raphinha arriving locked in with white cap and headphones in mint Barcelona tracksuit — peak pre-match aura and big-game mentality.",
+      "tags": [
+        "barca",
+        "fc_barcelona",
+        "raphinha",
+        "cold",
+        "pre_match",
+        "aura"
+      ]
+    },
+    {
+      "id": "barca_raphinha_serious",
+      "relative_path": "barca/raphinha_serious.jpg",
+      "category": "barca",
+      "subject": "Raphinha",
+      "club": "FC Barcelona",
+      "mood": "serious",
+      "description": "Barcelona captain Raphinha wearing the Catalan captain's armband on the pitch with an intense serious gaze — great for captaincy praise, comparison bait, or post-match frustration.",
+      "tags": [
+        "barca",
+        "fc_barcelona",
+        "raphinha",
+        "captain",
+        "serious",
+        "frustrated"
+      ]
+    },
+    {
+      "id": "barca_pau_cubarsi_laughing",
+      "relative_path": "barca/pau_cubarsi_laughing.jpg",
+      "category": "barca",
+      "subject": "Pau Cubarsi",
+      "club": "FC Barcelona",
+      "mood": "laughing",
+      "description": "Pau Cubarsi laughing hard with a huge grin in Barcelona pre-match training kit — S-tier reaction image for mocking Real Madrid or EPL 'Intensity League' clubs dropping points.",
+      "tags": [
+        "barca",
+        "fc_barcelona",
+        "pau_cubarsi",
+        "cubarsi",
+        "laughing",
+        "mocking",
+        "intensity_league"
+      ]
+    },
+    {
+      "id": "barca_pedri_celebrating",
+      "relative_path": "barca/pedri_celebrating.jpg",
+      "category": "barca",
+      "subject": "Pedri",
+      "club": "FC Barcelona",
+      "mood": "celebrating",
+      "description": "Pedri smiling and fist-pumping on the pitch in the FC Barcelona home kit — ideal for Pedri > EPL/Madrid midfielders comparisons and post-win celebrations.",
+      "tags": [
+        "barca",
+        "fc_barcelona",
+        "pedri",
+        "celebrating",
+        "midfield",
+        "la_liga"
+      ]
+    },
+    {
+      "id": "barca_fermin_lopez_celebrating",
+      "relative_path": "barca/fermin_lopez_celebrating.jpg",
+      "category": "barca",
+      "subject": "Fermin Lopez",
+      "club": "FC Barcelona",
+      "mood": "celebrating",
+      "description": "Fermin Lopez (#7) fist-pumping in front of the GOOL LED board after scoring for Barcelona — peak post-goal / post-win euphoria and La Masia > billion-pound EPL signings banter.",
+      "tags": [
+        "barca",
+        "fc_barcelona",
+        "fermin_lopez",
+        "fermin",
+        "la_masia",
+        "celebrating",
+        "hype"
+      ]
+    }
+  ]
 }

@@ -17,6 +17,7 @@ DEFAULT_ARCHETYPES = [
     "post_drop_meltdown",
     "rival_comparison_bait",
     "rival_match_slander",
+    "epl_intensity_slander",
     "would_you_rather",
     "unpopular_one_percent",
 ]

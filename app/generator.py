@@ -240,6 +240,7 @@ class PostGenerator:
             recent_archetypes=recent_archetypes,
             forced_archetype=forced_archetype,
             enabled_archetypes=cfg.enabled_archetypes,
+            boost_epl_slander=context.has_laliga_beat_epl,
         )
 
         has_images = bool(catalog.assets)

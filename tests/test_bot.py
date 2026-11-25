@@ -122,6 +122,34 @@ class TestMatchContext(unittest.TestCase):
         self.assertEqual(matches[0].barca_outcome(), "win")
         self.assertEqual(matches[0].goal_scorers, ["Lamine Yamal (22')"])
 
+    def test_laliga_beat_epl_and_epl_europe_flop_detection(self):
+        now = datetime(2026, 11, 25, 22, 0, tzinfo=timezone.utc)
+        laliga_win = MatchInfo(
+            competition="UEFA Champions League",
+            home_team="Athletic Club",
+            away_team="Arsenal",
+            home_score=2,
+            away_score=0,
+            status_state="post",
+            status_detail="FT",
+            kickoff_utc=now - timedelta(hours=2),
+        )
+        self.assertTrue(laliga_win.laliga_beat_epl())
+        self.assertTrue(laliga_win.epl_dropped_in_europe())
+
+        city_draw = MatchInfo(
+            competition="UEFA Champions League",
+            home_team="Manchester City",
+            away_team="Napoli",
+            home_score=2,
+            away_score=2,
+            status_state="post",
+            status_detail="FT",
+            kickoff_utc=now - timedelta(hours=3),
+        )
+        self.assertFalse(city_draw.laliga_beat_epl())
+        self.assertTrue(city_draw.epl_dropped_in_europe())
+
 
 class TestImageCatalog(unittest.TestCase):
     def test_metadata_inference_and_prepare_for_x(self):

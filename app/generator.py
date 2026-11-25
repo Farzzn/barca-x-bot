@@ -231,6 +231,8 @@ class PostGenerator:
         trigger_type: str = "scheduled",
         forced_archetype: Optional[str] = None,
         force_images: Optional[bool] = None,
+        target_club: str = "FC Barcelona",
+        slot_instructions: str = "",
     ) -> GenerationResult:
         """Generate a validated post with dual-key failover and return full telemetry."""
         cfg = behavior or self.settings.default_behavior()
@@ -260,6 +262,8 @@ class PostGenerator:
             trigger_type=trigger_type,
             chaos_level=cfg.chaos_level,
             custom_directive=cfg.custom_directive,
+            target_club=target_club,
+            slot_instructions=slot_instructions,
         )
 
         prompt = base_prompt

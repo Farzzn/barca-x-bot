@@ -104,6 +104,7 @@ export async function generatePreviewPost(params: {
   behavior: BotBehaviorConfig;
   archetype: string;
   triggerType: string;
+  targetClub?: string;
   barcaMatches: LiveMatchSnapshot[];
   rivalMatches: LiveMatchSnapshot[];
   images: CatalogImage[];
@@ -146,6 +147,7 @@ Rival Matches:
 ${rivalSummary}
 
 === TARGET ARCHETYPE & TUNING ===
+Target Club to Banter/Hype: ${params.targetClub || "FC Barcelona"}
 Archetype: ${params.archetype}
 Chaos Level: ${params.behavior.chaos_level}
 ${params.behavior.custom_directive ? `Admin Directive: ${params.behavior.custom_directive}` : ""}

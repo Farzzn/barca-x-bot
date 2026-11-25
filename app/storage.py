@@ -1,9 +1,9 @@
 """Persistence layer shared between the Heroku Python bot & Vercel Next.js Admin UI.
 
 Tables managed automatically in PostgreSQL (Neon/Supabase/Heroku) or local SQLite:
-  1. `bot_settings`      — Live behavior settings controlled from the Admin Dashboard
-  2. `x_post_history`    — Full post log + Gemini API key telemetry (primary vs fallback)
-  3. `match_events_sent` — Exact-once tracking for Half-Time (HT) & Full-Time (FT) triggers
+  1. `bot_settings`      — Live behavior & workflow settings controlled from Admin UI
+  2. `x_post_history`    — Full post log, target_club, workflow_slot, Gemini key telemetry, & reach metrics
+  3. `match_events_sent` — Exact-once locks for 8h Pre-Match, Lineup, HT, FT bursts, & Thursday UCL
 """
 
 from __future__ import annotations
@@ -12,12 +12,13 @@ import json
 import logging
 import sqlite3
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.config import DEFAULT_ARCHETYPES, RuntimeBehaviorConfig, Settings
-from app.context_fetcher import LiveFootballContext, MatchState
+from app.context_fetcher import LiveFootballContext
+from app.workflow import IST, evaluate_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,13 @@ class PostRecord:
     gemini_model: str = ""
     search_grounded: bool = False
     match_label: str = ""
+    target_club: str = "FC Barcelona"
+    workflow_slot: str = "scheduled"
+    impressions: int = 0
+    likes: int = 0
+    replies: int = 0
+    retweets: int = 0
+    quotes: int = 0
 
 
 def _normalize_pg_url(url: str) -> str:
@@ -46,8 +54,18 @@ def _normalize_pg_url(url: str) -> str:
     return url
 
 
+def _parse_ts(raw_ts) -> datetime:
+    if isinstance(raw_ts, str):
+        dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+    else:
+        dt = raw_ts
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 class HistoryStore:
-    """Shared DB layer for live Admin settings, HT/FT event locks, and post/API-key telemetry."""
+    """Shared DB layer for Admin settings, exact-once match locks, club tracking & telemetry."""
 
     def __init__(self, settings: Settings) -> None:
         self.database_url = _normalize_pg_url(settings.database_url) if settings.database_url else ""
@@ -57,8 +75,7 @@ class HistoryStore:
         if not self.use_postgres and settings.is_heroku:
             logger.warning(
                 "Running on Heroku without DATABASE_URL: local SQLite resets between one-off "
-                "Heroku Scheduler runs. Add a free Neon or Supabase DATABASE_URL so Heroku and "
-                "your Vercel Admin Dashboard share settings, HT/FT locks, and API-key telemetry."
+                "Heroku Scheduler runs. Add a free Neon DATABASE_URL."
             )
 
         self._init_schema()
@@ -108,6 +125,14 @@ class HistoryStore:
                         gemini_model TEXT NOT NULL DEFAULT '',
                         search_grounded BOOLEAN NOT NULL DEFAULT FALSE,
                         match_label TEXT NOT NULL DEFAULT '',
+                        target_club TEXT NOT NULL DEFAULT 'FC Barcelona',
+                        workflow_slot TEXT NOT NULL DEFAULT 'scheduled',
+                        impressions INTEGER NOT NULL DEFAULT 0,
+                        likes INTEGER NOT NULL DEFAULT 0,
+                        replies INTEGER NOT NULL DEFAULT 0,
+                        retweets INTEGER NOT NULL DEFAULT 0,
+                        quotes INTEGER NOT NULL DEFAULT 0,
+                        metrics_updated_at TIMESTAMPTZ,
                         created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     )
                     """
@@ -149,6 +174,14 @@ class HistoryStore:
                         gemini_model TEXT NOT NULL DEFAULT '',
                         search_grounded INTEGER NOT NULL DEFAULT 0,
                         match_label TEXT NOT NULL DEFAULT '',
+                        target_club TEXT NOT NULL DEFAULT 'FC Barcelona',
+                        workflow_slot TEXT NOT NULL DEFAULT 'scheduled',
+                        impressions INTEGER NOT NULL DEFAULT 0,
+                        likes INTEGER NOT NULL DEFAULT 0,
+                        replies INTEGER NOT NULL DEFAULT 0,
+                        retweets INTEGER NOT NULL DEFAULT 0,
+                        quotes INTEGER NOT NULL DEFAULT 0,
+                        metrics_updated_at TEXT,
                         created_at_utc TEXT NOT NULL
                     )
                     """
@@ -173,13 +206,21 @@ class HistoryStore:
                     """
                 )
 
-            # Safe idempotent migrations for existing tables created in v1
+            # Safe idempotent migrations for existing tables
             self._ensure_column(cur, "x_post_history", "trigger_type", "TEXT NOT NULL DEFAULT 'scheduled'", "TEXT NOT NULL DEFAULT 'scheduled'")
             self._ensure_column(cur, "x_post_history", "gemini_key_used", "TEXT NOT NULL DEFAULT 'primary'", "TEXT NOT NULL DEFAULT 'primary'")
             self._ensure_column(cur, "x_post_history", "gemini_fallback_reason", "TEXT NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(cur, "x_post_history", "gemini_model", "TEXT NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(cur, "x_post_history", "search_grounded", "BOOLEAN NOT NULL DEFAULT FALSE", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(cur, "x_post_history", "match_label", "TEXT NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(cur, "x_post_history", "target_club", "TEXT NOT NULL DEFAULT 'FC Barcelona'", "TEXT NOT NULL DEFAULT 'FC Barcelona'")
+            self._ensure_column(cur, "x_post_history", "workflow_slot", "TEXT NOT NULL DEFAULT 'scheduled'", "TEXT NOT NULL DEFAULT 'scheduled'")
+            self._ensure_column(cur, "x_post_history", "impressions", "INTEGER NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(cur, "x_post_history", "likes", "INTEGER NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(cur, "x_post_history", "replies", "INTEGER NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(cur, "x_post_history", "retweets", "INTEGER NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(cur, "x_post_history", "quotes", "INTEGER NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(cur, "x_post_history", "metrics_updated_at", "TIMESTAMPTZ", "TEXT")
 
             conn.commit()
             cur.close()
@@ -187,7 +228,6 @@ class HistoryStore:
             conn.close()
 
     def get_behavior_config(self, defaults: RuntimeBehaviorConfig) -> RuntimeBehaviorConfig:
-        """Read live settings saved from the Admin UI, seeding defaults if empty."""
         conn = self._connect()
         try:
             cur = conn.cursor()
@@ -224,12 +264,11 @@ class HistoryStore:
             bot_enabled=bool(data.get("bot_enabled", defaults.bot_enabled)),
             dry_run=bool(data.get("dry_run", defaults.dry_run)),
             max_posts_per_day=max(1, min(15, int(data.get("max_posts_per_day", defaults.max_posts_per_day)))),
-            min_minutes_between_posts=max(
-                15, int(data.get("min_minutes_between_posts", defaults.min_minutes_between_posts))
-            ),
-            matchday_cooldown_minutes=max(
-                10, int(data.get("matchday_cooldown_minutes", defaults.matchday_cooldown_minutes))
-            ),
+            weekly_post_target=max(7, min(70, int(data.get("weekly_post_target", defaults.weekly_post_target)))),
+            non_matchday_min_posts=max(0, min(5, int(data.get("non_matchday_min_posts", defaults.non_matchday_min_posts)))),
+            non_matchday_max_posts=max(1, min(6, int(data.get("non_matchday_max_posts", defaults.non_matchday_max_posts)))),
+            min_minutes_between_posts=max(15, int(data.get("min_minutes_between_posts", defaults.min_minutes_between_posts))),
+            matchday_cooldown_minutes=max(10, int(data.get("matchday_cooldown_minutes", defaults.matchday_cooldown_minutes))),
             post_hours_utc=_hours(data.get("post_hours_utc")),
             image_post_ratio=max(0.0, min(1.0, float(data.get("image_post_ratio", defaults.image_post_ratio)))),
             gemini_model=str(data.get("gemini_model", defaults.gemini_model) or defaults.gemini_model),
@@ -290,8 +329,33 @@ class HistoryStore:
         finally:
             conn.close()
 
-    def mark_match_event_sent(self, match_key: str, event_type: str) -> None:
-        now = datetime.now(timezone.utc)
+    def last_match_event_time(self, match_key: str, event_types: List[str]) -> Optional[datetime]:
+        if not event_types:
+            return None
+        p = self._placeholder()
+        placeholders = ", ".join(p for _ in event_types)
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                SELECT created_at_utc FROM match_events_sent
+                WHERE match_key = {p} AND event_type IN ({placeholders})
+                ORDER BY created_at_utc DESC
+                LIMIT 1
+                """,
+                tuple([match_key, *event_types]),
+            )
+            row = cur.fetchone()
+            cur.close()
+            return _parse_ts(row[0]) if row and row[0] else None
+        finally:
+            conn.close()
+
+    def mark_match_event_sent(
+        self, match_key: str, event_type: str, created_at_utc: Optional[datetime] = None
+    ) -> None:
+        now = (created_at_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
         p = self._placeholder()
         conn = self._connect()
         try:
@@ -334,6 +398,8 @@ class HistoryStore:
         gemini_model: str = "",
         search_grounded: bool = False,
         match_label: str = "",
+        target_club: str = "FC Barcelona",
+        workflow_slot: str = "scheduled",
     ) -> None:
         ts = (created_at_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
         p = self._placeholder()
@@ -345,9 +411,9 @@ class HistoryStore:
                 INSERT INTO x_post_history (
                     tweet_id, archetype, match_state, angle_summary, text, image_ids,
                     dry_run, trigger_type, gemini_key_used, gemini_fallback_reason,
-                    gemini_model, search_grounded, match_label, created_at_utc
+                    gemini_model, search_grounded, match_label, target_club, workflow_slot, created_at_utc
                 )
-                VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+                VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
                 """,
                 (
                     tweet_id,
@@ -363,6 +429,8 @@ class HistoryStore:
                     gemini_model,
                     bool(search_grounded) if self.use_postgres else (1 if search_grounded else 0),
                     match_label,
+                    target_club,
+                    workflow_slot,
                     ts if self.use_postgres else ts.isoformat(),
                 ),
             )
@@ -381,7 +449,8 @@ class HistoryStore:
                 f"""
                 SELECT tweet_id, archetype, match_state, angle_summary, text, image_ids,
                        dry_run, created_at_utc, trigger_type, gemini_key_used,
-                       gemini_fallback_reason, gemini_model, search_grounded, match_label
+                       gemini_fallback_reason, gemini_model, search_grounded, match_label,
+                       target_club, workflow_slot, impressions, likes, replies, retweets, quotes
                 FROM x_post_history
                 {where}
                 ORDER BY id DESC
@@ -396,13 +465,6 @@ class HistoryStore:
 
         records: List[PostRecord] = []
         for row in rows:
-            raw_ts = row[7]
-            if isinstance(raw_ts, str):
-                dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
-            else:
-                dt = raw_ts
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
             records.append(
                 PostRecord(
                     tweet_id=row[0] or "",
@@ -412,20 +474,28 @@ class HistoryStore:
                     text=row[4],
                     image_ids=json.loads(row[5] or "[]"),
                     dry_run=bool(row[6]),
-                    created_at_utc=dt.astimezone(timezone.utc),
+                    created_at_utc=_parse_ts(row[7]),
                     trigger_type=row[8] or "scheduled",
                     gemini_key_used=row[9] or "primary",
                     gemini_fallback_reason=row[10] or "",
                     gemini_model=row[11] or "",
                     search_grounded=bool(row[12]),
                     match_label=row[13] or "",
+                    target_club=row[14] or "FC Barcelona",
+                    workflow_slot=row[15] or "scheduled",
+                    impressions=int(row[16] or 0),
+                    likes=int(row[17] or 0),
+                    replies=int(row[18] or 0),
+                    retweets=int(row[19] or 0),
+                    quotes=int(row[20] or 0),
                 )
             )
         return records
 
-    def count_posts_today_utc(self, now: Optional[datetime] = None) -> int:
-        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        start_of_day = current.replace(hour=0, minute=0, second=0, microsecond=0)
+    def get_recent_target_clubs(self, limit: int = 12) -> List[str]:
+        return [r.target_club for r in self.get_recent_posts(limit=limit, include_dry_runs=False) if r.target_club]
+
+    def count_posts_since(self, since_utc: datetime) -> int:
         p = self._placeholder()
         conn = self._connect()
         try:
@@ -433,18 +503,31 @@ class HistoryStore:
             if self.use_postgres:
                 cur.execute(
                     f"SELECT COUNT(*) FROM x_post_history WHERE dry_run = FALSE AND created_at_utc >= {p}",
-                    (start_of_day,),
+                    (since_utc,),
                 )
             else:
                 cur.execute(
                     f"SELECT COUNT(*) FROM x_post_history WHERE dry_run = 0 AND created_at_utc >= {p}",
-                    (start_of_day.isoformat(),),
+                    (since_utc.isoformat(),),
                 )
             count = int(cur.fetchone()[0])
             cur.close()
             return count
         finally:
             conn.close()
+
+    def count_posts_today_utc(self, now: Optional[datetime] = None) -> int:
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        return self.count_posts_since(current.replace(hour=0, minute=0, second=0, microsecond=0))
+
+    def count_posts_today_ist(self, now: Optional[datetime] = None) -> int:
+        current_ist = (now or datetime.now(timezone.utc)).astimezone(IST)
+        start_ist = current_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+        return self.count_posts_since(start_ist.astimezone(timezone.utc))
+
+    def count_posts_rolling_days(self, days: int = 7, now: Optional[datetime] = None) -> int:
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        return self.count_posts_since(current - timedelta(days=days))
 
     def last_live_post_time(self) -> Optional[datetime]:
         recent = self.get_recent_posts(limit=1, include_dry_runs=False)
@@ -457,69 +540,9 @@ def decide_run_action(
     context: LiveFootballContext,
     now: Optional[datetime] = None,
 ) -> Tuple[bool, str, str]:
-    """Decide whether this scheduler tick should post, returning `(allowed, trigger_type, reason)`."""
-    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-
-    if not behavior.bot_enabled:
-        return False, "paused", "Bot is currently paused via Admin Dashboard (`bot_enabled=false`)."
-
-    posts_today = store.count_posts_today_utc(current)
-
-    # 1. HIGH-PRIORITY INSTANT TRIGGERS: Half-Time & Full-Time (peak X engagement moments!)
-    instant_event = context.instant_event_type
-    if instant_event and context.focus_match:
-        enabled = (
-            behavior.auto_post_halftime
-            if instant_event == "halftime"
-            else behavior.auto_post_fulltime
-        )
-        if enabled and not store.has_sent_match_event(context.focus_match.match_key, instant_event):
-            # Allow up to +2 bonus posts beyond daily cap so HT/FT reactions never miss!
-            if posts_today < behavior.max_posts_per_day + 2:
-                return (
-                    True,
-                    instant_event,
-                    f"Instant {instant_event.upper()} trigger fired for {context.focus_match.summary_line()}!",
-                )
-
-    # 2. Regular daily cap check
-    if posts_today >= behavior.max_posts_per_day:
-        return False, "cap", f"Daily cap reached ({posts_today}/{behavior.max_posts_per_day} posts today UTC)."
-
-    # 3. Cooldown check (shorter during live/post match windows)
-    last_post = store.last_live_post_time()
-    is_hot = context.is_matchday_hot and (
-        context.match_state != MatchState.BARCA_PRE_MATCH or behavior.auto_post_prematch
-    )
-    cooldown = behavior.matchday_cooldown_minutes if is_hot else behavior.min_minutes_between_posts
-    if last_post is not None:
-        elapsed_minutes = (current - last_post).total_seconds() / 60.0
-        if elapsed_minutes < cooldown:
-            return (
-                False,
-                "cooldown",
-                f"Cooldown active ({elapsed_minutes:.1f}m elapsed < {cooldown}m required for state={context.match_state.value}).",
-            )
-
-    # 4. Matchday hot window posts immediately once cooldown clears
-    if is_hot:
-        return True, "matchday", f"Barca matchday window active ({context.match_state.value}); posting allowed."
-
-    # 5. Rival drama optional check
-    if context.match_state == MatchState.RIVAL_MATCH_DRAMA and not behavior.auto_post_rival_drama:
-        # Downgrade to normal UTC slot pacing
-        pass
-
-    # 6. Quiet-day UTC slot check (safe even when Heroku Scheduler runs every 10 minutes!)
-    if current.hour not in behavior.post_hours_utc:
-        return (
-            False,
-            "off_hour",
-            f"Current UTC hour {current.hour:02d} not in POST_HOURS_UTC={behavior.post_hours_utc} "
-            f"(no active Barca match).",
-        )
-
-    return True, "scheduled", f"Scheduled UTC hour {current.hour:02d} matched ({posts_today}/{behavior.max_posts_per_day} today)."
+    """Backwards-compatible wrapper around `evaluate_workflow`."""
+    d = evaluate_workflow(behavior, store, context, now=now)
+    return d.should_post, d.trigger_type, d.reason
 
 
 def should_post_now(
@@ -528,6 +551,5 @@ def should_post_now(
     context: LiveFootballContext,
     now: Optional[datetime] = None,
 ) -> Tuple[bool, str]:
-    """Backwards-compatible wrapper around `decide_run_action`."""
-    allowed, _, reason = decide_run_action(settings.default_behavior(), store, context, now=now)
-    return allowed, reason
+    d = evaluate_workflow(settings.default_behavior(), store, context, now=now)
+    return d.should_post, d.reason

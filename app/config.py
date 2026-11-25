@@ -71,12 +71,15 @@ class RuntimeBehaviorConfig:
     bot_enabled: bool = True
     dry_run: bool = False
     max_posts_per_day: int = 6
-    min_minutes_between_posts: int = 110
-    matchday_cooldown_minutes: int = 45
-    post_hours_utc: List[int] = field(default_factory=lambda: [8, 11, 14, 17, 20, 22])
-    image_post_ratio: float = 0.55
-    gemini_model: str = "gemini-4-hydrogen"
-    enable_google_search: bool = True
+    weekly_post_target: int = 26  # 26 ± 4 posts/week -> avg <= 3.71/day
+    non_matchday_min_posts: int = 1
+    non_matchday_max_posts: int = 3
+    min_minutes_between_posts: int = 150
+    matchday_cooldown_minutes: int = 20
+    post_hours_utc: List[int] = field(default_factory=lambda: [6, 11, 16])
+    image_post_ratio: float = 0.60
+    gemini_model: str = "gemini-3.5-flash-lite"
+    enable_google_search: bool = False
     auto_post_halftime: bool = True
     auto_post_fulltime: bool = True
     auto_post_prematch: bool = True
@@ -107,10 +110,13 @@ class Settings:
 
     bot_enabled: bool = True
     max_posts_per_day: int = 6
-    min_minutes_between_posts: int = 110
-    matchday_cooldown_minutes: int = 45
-    post_hours_utc: List[int] = field(default_factory=lambda: [8, 11, 14, 17, 20, 22])
-    image_post_ratio: float = 0.55
+    weekly_post_target: int = 26
+    non_matchday_min_posts: int = 1
+    non_matchday_max_posts: int = 3
+    min_minutes_between_posts: int = 150
+    matchday_cooldown_minutes: int = 20
+    post_hours_utc: List[int] = field(default_factory=lambda: [6, 11, 16])
+    image_post_ratio: float = 0.60
     auto_post_halftime: bool = True
     auto_post_fulltime: bool = True
     auto_post_prematch: bool = True
@@ -151,6 +157,9 @@ class Settings:
             bot_enabled=self.bot_enabled,
             dry_run=self.dry_run,
             max_posts_per_day=self.max_posts_per_day,
+            weekly_post_target=self.weekly_post_target,
+            non_matchday_min_posts=self.non_matchday_min_posts,
+            non_matchday_max_posts=self.non_matchday_max_posts,
             min_minutes_between_posts=self.min_minutes_between_posts,
             matchday_cooldown_minutes=self.matchday_cooldown_minutes,
             post_hours_utc=list(self.post_hours_utc),
@@ -212,10 +221,13 @@ def load_settings(env_file: Optional[Path] = None) -> Settings:
         github_images_prefix=os.getenv("GITHUB_IMAGES_PREFIX", "assets/images").strip().strip("/") or "assets/images",
         bot_enabled=_parse_bool(os.getenv("BOT_ENABLED"), default=True),
         max_posts_per_day=max(1, min(15, _parse_int(os.getenv("MAX_POSTS_PER_DAY"), 6))),
-        min_minutes_between_posts=max(15, _parse_int(os.getenv("MIN_MINUTES_BETWEEN_POSTS"), 110)),
-        matchday_cooldown_minutes=max(10, _parse_int(os.getenv("MATCHDAY_COOLDOWN_MINUTES"), 45)),
-        post_hours_utc=_parse_hours(os.getenv("POST_HOURS_UTC"), [8, 11, 14, 17, 20, 22]),
-        image_post_ratio=max(0.0, min(1.0, _parse_float(os.getenv("IMAGE_POST_RATIO"), 0.55))),
+        weekly_post_target=max(7, min(70, _parse_int(os.getenv("WEEKLY_POST_TARGET"), 26))),
+        non_matchday_min_posts=max(0, min(5, _parse_int(os.getenv("NON_MATCHDAY_MIN_POSTS"), 1))),
+        non_matchday_max_posts=max(1, min(6, _parse_int(os.getenv("NON_MATCHDAY_MAX_POSTS"), 3))),
+        min_minutes_between_posts=max(15, _parse_int(os.getenv("MIN_MINUTES_BETWEEN_POSTS"), 150)),
+        matchday_cooldown_minutes=max(10, _parse_int(os.getenv("MATCHDAY_COOLDOWN_MINUTES"), 20)),
+        post_hours_utc=_parse_hours(os.getenv("POST_HOURS_UTC"), [6, 11, 16]),
+        image_post_ratio=max(0.0, min(1.0, _parse_float(os.getenv("IMAGE_POST_RATIO"), 0.60))),
         auto_post_halftime=_parse_bool(os.getenv("AUTO_POST_HALFTIME"), default=True),
         auto_post_fulltime=_parse_bool(os.getenv("AUTO_POST_FULLTIME"), default=True),
         auto_post_prematch=_parse_bool(os.getenv("AUTO_POST_PREMATCH"), default=True),

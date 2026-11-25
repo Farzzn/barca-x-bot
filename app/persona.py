@@ -247,28 +247,23 @@ def build_user_prompt(
     trigger_type: str = "scheduled",
     chaos_level: str = "spicy",
     custom_directive: str = "",
+    target_club: str = "FC Barcelona",
+    slot_instructions: str = "",
 ) -> str:
-    """Construct the full generation prompt with live match triggers, chaos tuning, and image menu."""
+    """Construct the full generation prompt with workflow slot instructions, target club, and image menu."""
     recent_block = (
         "\n".join(f"  {i + 1}. {text}" for i, text in enumerate(recent_posts[:12]))
         if recent_posts
         else "  (None yet — this is one of the first posts.)"
     )
 
-    trigger_note = ""
-    if trigger_type == "halftime":
-        trigger_note = (
-            "\n=== INSTANT HALF-TIME TRIGGER ===\n"
-            "IT IS HALF-TIME RIGHT NOW in FC Barcelona's match! Everyone is checking X during the 15-minute break. "
-            "React immediately to the exact first-half scoreline and scorers from the live context — raw, impulsive half-time Football Twitter energy!"
-        )
-    elif trigger_type == "fulltime":
-        trigger_note = (
-            "\n=== INSTANT FULL-TIME TRIGGER ===\n"
-            "THE FINAL WHISTLE JUST BLEW in FC Barcelona's match! Views peak right now. "
-            "React immediately to the exact final scoreline, scorers, and breaking post-match news above — "
-            "pure euphoria if Barça won, or dramatic comedic meltdown if Barça drew/lost!"
-        )
+    slot_block = (
+        f"\n=== EXACT WORKFLOW ASSIGNMENT (FOLLOW THIS ABOVE ALL) ===\n"
+        f"Target Club / Topic: {target_club}\n"
+        f"Assignment: {slot_instructions.strip()}"
+        if slot_instructions.strip()
+        else f"\n=== TARGET CLUB ===\nTarget Club: {target_club}"
+    )
 
     chaos_note = CHAOS_LEVEL_NOTES.get(chaos_level, CHAOS_LEVEL_NOTES["spicy"])
     directive_block = (
@@ -280,9 +275,9 @@ def build_user_prompt(
     if encourage_images:
         if archetype.preferred_image_count == 2:
             image_guidance = (
-                "IMAGE SELECTION: Strongly prefer selecting 2 contrasting images from the catalog "
-                "(e.g., 1 Barça player + 1 rival player) for a side-by-side comparison post. "
-                "If only 1 strong match exists, select 1. Never invent IDs not in the catalog."
+                "IMAGE SELECTION: Prefer selecting 1 or 2 matching images from the catalog "
+                "(e.g., 2 contrasting players if both exist, or 1 sharp Barça player/reaction image). "
+                "Never invent IDs not in the catalog."
             )
         else:
             image_guidance = (
@@ -292,11 +287,11 @@ def build_user_prompt(
     else:
         image_guidance = (
             "IMAGE SELECTION: For this slot, prefer a sharp text-only post (selected_image_ids: []), "
-            "UNLESS a 2-image side-by-side comparison makes the joke way funnier."
+            "UNLESS a catalog image makes the punchline noticeably funnier."
         )
 
     return f"""=== LIVE FOOTBALL CONTEXT ===
-{context.to_prompt_block()}{trigger_note}
+{context.to_prompt_block()}{slot_block}
 
 === TARGET POST ARCHETYPE ===
 Archetype: {archetype.name} ({archetype.description})

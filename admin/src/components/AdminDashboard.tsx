@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
   ExternalLink,
   Flame,
@@ -13,6 +14,7 @@ import {
   Lock,
   LogOut,
   PauseCircle,
+  Pencil,
   PlayCircle,
   RefreshCw,
   Save,
@@ -21,11 +23,11 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
-import type { BotBehaviorConfig, PostHistoryRow } from "@/lib/db";
+import type { BotBehaviorConfig, ClubAnalyticsRow, PostHistoryRow } from "@/lib/db";
 import type { LiveMatchSnapshot } from "@/lib/espn";
 import type { CatalogImage } from "@/lib/github";
 
-type TabId = "activity" | "controls" | "images";
+type TabId = "activity" | "analytics" | "controls" | "images";
 
 interface AuthStatus {
   authenticated: boolean;
@@ -37,6 +39,8 @@ interface AuthStatus {
 
 interface ActivityStats {
   postsTodayLive: number;
+  postsLast7Days: number;
+  dailyAvg7d: number;
   totalLivePosts: number;
   totalDryRuns: number;
   primaryKeyCount: number;
@@ -51,30 +55,48 @@ interface PreviewResult {
   selected_image_ids: string[];
   angle_summary: string;
   archetype: string;
+  target_club?: string;
   gemini_key_used: "primary" | "fallback";
   gemini_fallback_reason: string;
   gemini_model: string;
 }
 
 const ARCHETYPES = [
-  { id: "pre_match_delusion", label: "Pre-Match Delusion", desc: "Overconfident lineup & scoreline hype" },
-  { id: "post_win_hype", label: "Post-Win / HT Euphoria", desc: "Unhinged celebration & treble talk" },
-  { id: "post_drop_meltdown", label: "Draw/Loss Meltdown", desc: "Instant rage, 'tactically empty', 'sack him'" },
-  { id: "rival_comparison_bait", label: "Rival Comparison Bait", desc: "Side-by-side Barça vs Madrid player civil wars" },
-  { id: "rival_match_slander", label: "Rival Match Slander", desc: "Madrid/UCL jinxes, haram ball & ref banter" },
-  { id: "epl_intensity_slander", label: "EPL 'Intensity League' Slander", desc: "Mock Premier League clubs & push La Liga > EPL" },
+  { id: "pre_match_delusion", label: "Pre-Match & Lineup Brag", desc: "8h pre-match & lineup hype" },
+  { id: "post_win_hype", label: "HT / FT Win Euphoria", desc: "Unhinged celebration & treble talk" },
+  { id: "post_drop_meltdown", label: "HT / FT Meltdown", desc: "Instant rage, 'send Gordon back', 'Flick out'" },
+  { id: "rival_comparison_bait", label: "Rival Comparison Bait", desc: "Side-by-side Barça vs rival player wars" },
+  { id: "rival_match_slander", label: "Real Madrid & Rival Slander", desc: "Madrid lineup/FT discrediting & rival roasts" },
+  { id: "epl_intensity_slander", label: "EPL 'Intensity League' Slander", desc: "Mock Premier League clubs & La Liga > EPL" },
   { id: "would_you_rather", label: "Would You Rather", desc: "2-option Barça transfer & squad dilemmas" },
   { id: "unpopular_one_percent", label: "Unpopular 1% Takes", desc: "Deadpan contrarian Culer hot takes" },
+];
+
+const TARGET_CLUBS = [
+  "FC Barcelona",
+  "Real Madrid",
+  "Arsenal",
+  "Manchester City",
+  "Liverpool",
+  "Chelsea",
+  "Manchester United",
+  "Atletico Madrid",
+  "PSG",
+  "Bayern Munich",
+  "EPL (Intensity League)",
 ];
 
 const DEFAULT_CONFIG: BotBehaviorConfig = {
   bot_enabled: true,
   dry_run: false,
   max_posts_per_day: 6,
-  min_minutes_between_posts: 110,
-  matchday_cooldown_minutes: 45,
-  post_hours_utc: [8, 11, 14, 17, 20, 22],
-  image_post_ratio: 0.55,
+  weekly_post_target: 26,
+  non_matchday_min_posts: 1,
+  non_matchday_max_posts: 3,
+  min_minutes_between_posts: 150,
+  matchday_cooldown_minutes: 20,
+  post_hours_utc: [6, 11, 16],
+  image_post_ratio: 0.6,
   gemini_model: "gemini-3.5-flash-lite",
   enable_google_search: false,
   auto_post_halftime: true,
@@ -88,9 +110,12 @@ const DEFAULT_CONFIG: BotBehaviorConfig = {
 
 const MOOD_PRESETS = [
   "celebrating",
+  "confident",
   "cold",
   "smiling",
+  "laughing",
   "serious",
+  "focused",
   "angry",
   "frustrated",
   "complaining",
@@ -125,10 +150,13 @@ export default function AdminDashboard() {
   const [savingConfig, setSavingConfig] = useState(false);
   const [settingsUpdatedAt, setSettingsUpdatedAt] = useState<string | null>(null);
 
-  // Activity state
+  // Activity & Club Analytics state
   const [posts, setPosts] = useState<PostHistoryRow[]>([]);
+  const [clubAnalytics, setClubAnalytics] = useState<ClubAnalyticsRow[]>([]);
   const [stats, setStats] = useState<ActivityStats>({
     postsTodayLive: 0,
+    postsLast7Days: 0,
+    dailyAvg7d: 0,
     totalLivePosts: 0,
     totalDryRuns: 0,
     primaryKeyCount: 0,
@@ -140,9 +168,16 @@ export default function AdminDashboard() {
   const [barcaMatches, setBarcaMatches] = useState<LiveMatchSnapshot[]>([]);
   const [rivalMatches, setRivalMatches] = useState<LiveMatchSnapshot[]>([]);
   const [activityFilter, setActivityFilter] = useState<"all" | "live" | "dry" | "fallback" | "match">("all");
+  const [clubFilter, setClubFilter] = useState<string>("all");
+
+  // Inline free metrics editor state
+  const [editingMetricsId, setEditingMetricsId] = useState<number | null>(null);
+  const [metricsDraft, setMetricsDraft] = useState({ impressions: 0, likes: 0, replies: 0, retweets: 0, quotes: 0 });
+  const [savingMetrics, setSavingMetrics] = useState(false);
 
   // Preview generator state
-  const [previewArchetype, setPreviewArchetype] = useState("rival_comparison_bait");
+  const [previewArchetype, setPreviewArchetype] = useState("epl_intensity_slander");
+  const [previewClub, setPreviewClub] = useState("Arsenal");
   const [previewTrigger, setPreviewTrigger] = useState("manual");
   const [generatingPreview, setGeneratingPreview] = useState(false);
   const [previewResult, setPreviewResult] = useState<PreviewResult | null>(null);
@@ -174,7 +209,7 @@ export default function AdminDashboard() {
     try {
       const [settingsRes, activityRes, imagesRes] = await Promise.all([
         fetch("/api/settings", { cache: "no-store" }),
-        fetch("/api/activity?limit=80", { cache: "no-store" }),
+        fetch("/api/activity?limit=120", { cache: "no-store" }),
         fetch("/api/images", { cache: "no-store" }),
       ]);
 
@@ -186,6 +221,7 @@ export default function AdminDashboard() {
       if (activityRes.ok) {
         const aData = await activityRes.json();
         setPosts(aData.posts || []);
+        setClubAnalytics(aData.clubAnalytics || []);
         if (aData.stats) setStats(aData.stats);
         setBarcaMatches(aData.liveMatches?.barcaMatches || []);
         setRivalMatches(aData.liveMatches?.rivalMatches || []);
@@ -270,7 +306,7 @@ export default function AdminDashboard() {
       }
       setConfig(data.config);
       setSettingsUpdatedAt(data.updatedAt);
-      flash("ok", "Behavior settings saved live — Heroku will use them on the very next tick.");
+      flash("ok", "Behavior settings saved live — Heroku will use them on the very next 10-min tick.");
     } catch (err) {
       flash("err", err instanceof Error ? err.message : "Save failed");
     } finally {
@@ -291,7 +327,11 @@ export default function AdminDashboard() {
       const res = await fetch("/api/preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ archetype: previewArchetype, trigger_type: previewTrigger }),
+        body: JSON.stringify({
+          archetype: previewArchetype,
+          trigger_type: previewTrigger,
+          target_club: previewClub,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -299,12 +339,44 @@ export default function AdminDashboard() {
         return;
       }
       setPreviewResult(data.preview);
-      flash("ok", `Preview generated via Gemini ${data.preview.gemini_key_used.toUpperCase()} key!`);
+      flash("ok", `Preview generated for ${previewClub} via Gemini ${data.preview.gemini_key_used.toUpperCase()} key!`);
       await loadAll();
     } catch (err) {
       flash("err", err instanceof Error ? err.message : "Preview error");
     } finally {
       setGeneratingPreview(false);
+    }
+  }
+
+  function startEditMetrics(post: PostHistoryRow) {
+    setEditingMetricsId(post.id);
+    setMetricsDraft({
+      impressions: post.impressions,
+      likes: post.likes,
+      replies: post.replies,
+      retweets: post.retweets,
+      quotes: post.quotes,
+    });
+  }
+
+  async function handleSaveMetrics(postId: number) {
+    setSavingMetrics(true);
+    try {
+      const res = await fetch("/api/metrics", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: postId, ...metricsDraft }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        flash("err", d.error || "Could not save metrics");
+        return;
+      }
+      setEditingMetricsId(null);
+      flash("ok", "Post reach stats saved — Club Reach leaderboard updated!");
+      await loadAll();
+    } finally {
+      setSavingMetrics(false);
     }
   }
 
@@ -362,25 +434,40 @@ export default function AdminDashboard() {
     }
   }
 
+  const availableClubNames = useMemo(() => {
+    const s = new Set<string>(TARGET_CLUBS);
+    for (const p of posts) {
+      if (p.target_club) s.add(p.target_club);
+    }
+    return Array.from(s);
+  }, [posts]);
+
   const filteredPosts = useMemo(() => {
     return posts.filter((p) => {
+      if (clubFilter !== "all" && p.target_club !== clubFilter) return false;
       if (activityFilter === "live") return !p.dry_run;
       if (activityFilter === "dry") return p.dry_run;
       if (activityFilter === "fallback") return p.gemini_key_used === "fallback";
-      if (activityFilter === "match") return p.trigger_type === "halftime" || p.trigger_type === "fulltime";
+      if (activityFilter === "match") {
+        return ["halftime", "fulltime", "lineup", "matchday", "thursday_ucl"].includes(p.trigger_type);
+      }
       return true;
     });
-  }, [posts, activityFilter]);
+  }, [posts, activityFilter, clubFilter]);
 
   const filteredImages = useMemo(() => {
     if (imageFilterCat === "all") return images;
     return images.filter((img) => img.category === imageFilterCat);
   }, [images, imageFilterCat]);
 
+  const maxClubAvgImpressions = useMemo(
+    () => Math.max(1, ...clubAnalytics.map((c) => c.avgImpressions || c.livePosts)),
+    [clubAnalytics]
+  );
+
   const totalKeyCalls = stats.primaryKeyCount + stats.fallbackKeyCount;
   const primaryPct = totalKeyCalls > 0 ? Math.round((stats.primaryKeyCount / totalKeyCalls) * 100) : 100;
 
-  // Loading auth gate
   if (!auth) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -389,7 +476,6 @@ export default function AdminDashboard() {
     );
   }
 
-  // Login screen
   if (!auth.authenticated) {
     return (
       <div className="flex min-h-screen items-center justify-center px-4">
@@ -458,7 +544,7 @@ export default function AdminDashboard() {
                 ? `Next/Live Barça: [${barcaMatches[0].competition}] ${barcaMatches[0].homeTeam} ${
                     barcaMatches[0].homeScore ?? "vs"
                   } ${barcaMatches[0].awayScore ?? ""} ${barcaMatches[0].awayTeam} (${barcaMatches[0].detail})`
-                : "No immediate Barça match in 48h window — off-day banter & rival slander active"}
+                : "No immediate Barça match — Big-8 rotation & Real Madrid / Thursday UCL radar active"}
             </p>
           </div>
         </div>
@@ -498,39 +584,6 @@ export default function AdminDashboard() {
         </div>
       </header>
 
-      {/* Setup Warnings */}
-      {(!auth.databaseConfigured || !auth.githubConfigured || !auth.authRequired) && (
-        <div className="mb-5 flex flex-col gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs text-amber-200">
-          {!auth.databaseConfigured && (
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
-              <span>
-                <strong>DATABASE_URL not set:</strong> Connect a free Neon or Supabase PostgreSQL URL in both Vercel and
-                Heroku to share live settings, HT/FT locks, and Gemini API key activity.
-              </span>
-            </div>
-          )}
-          {!auth.githubConfigured && (
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
-              <span>
-                <strong>GITHUB_REPO / GITHUB_TOKEN not set:</strong> Add them in Vercel to upload and manage player
-                images directly in GitHub.
-              </span>
-            </div>
-          )}
-          {!auth.authRequired && (
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
-              <span>
-                <strong>ADMIN_PASSWORD not set:</strong> Fine for localhost, but always set <code>ADMIN_PASSWORD</code>{" "}
-                in Vercel Environment Variables before deploying publicly.
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Toast Banner */}
       {banner && (
         <div
@@ -549,7 +602,8 @@ export default function AdminDashboard() {
       <nav className="mb-6 flex flex-wrap gap-2">
         {[
           { id: "activity" as const, label: "Activity & API Keys", icon: Activity },
-          { id: "controls" as const, label: "Posting Behavior", icon: Sliders },
+          { id: "analytics" as const, label: "Club Reach & Analytics", icon: BarChart3 },
+          { id: "controls" as const, label: "Workflow & Behavior", icon: Sliders },
           { id: "images" as const, label: `GitHub Images (${images.length})`, icon: ImageIcon },
         ].map((item) => {
           const Icon = item.icon;
@@ -577,9 +631,13 @@ export default function AdminDashboard() {
           {/* KPI Cards */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-4">
-              <p className="text-xs text-slate-400">Live Posts Today (UTC)</p>
+              <p className="text-xs text-slate-400">7-Day Rolling Pace</p>
               <p className="mt-1 text-2xl font-bold text-white">
-                {stats.postsTodayLive} <span className="text-sm font-normal text-slate-400">/ {config.max_posts_per_day}</span>
+                {stats.postsLast7Days}{" "}
+                <span className="text-sm font-normal text-slate-400">/ {config.weekly_post_target}</span>
+              </p>
+              <p className="text-[11px] text-sky-300">
+                Avg {stats.dailyAvg7d.toFixed(2)}/day (target ≤ 3.71)
               </p>
             </div>
 
@@ -606,11 +664,11 @@ export default function AdminDashboard() {
 
             <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-4">
               <p className="flex items-center gap-1.5 text-xs text-sky-300">
-                <Flame className="h-3.5 w-3.5" /> HT / FT Triggers
+                <Flame className="h-3.5 w-3.5" /> Live Posts Today
               </p>
-              <p className="mt-1 text-2xl font-bold text-white">
-                {stats.halftimeCount} <span className="text-xs font-normal text-slate-400">HT</span> · {stats.fulltimeCount}{" "}
-                <span className="text-xs font-normal text-slate-400">FT</span>
+              <p className="mt-1 text-2xl font-bold text-white">{stats.postsTodayLive}</p>
+              <p className="text-[11px] text-slate-400">
+                {stats.halftimeCount} HT · {stats.fulltimeCount} FT total
               </p>
             </div>
 
@@ -627,14 +685,24 @@ export default function AdminDashboard() {
               <div>
                 <h2 className="flex items-center gap-2 text-base font-bold text-white">
                   <Sparkles className="h-4 w-4 text-[#edbb00]" />
-                  Instant Dry-Run Preview (Tests Dual Gemini Keys Live)
+                  Instant Dry-Run Preview (Test Any Rival Club)
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Generates a sample post using your current settings, live ESPN match context, and GitHub images without
-                  spending X credits.
+                  Tests Primary → Fallback Gemini keys, live ESPN context, and GitHub images without spending X credits.
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={previewClub}
+                  onChange={(e) => setPreviewClub(e.target.value)}
+                  className="rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200"
+                >
+                  {TARGET_CLUBS.map((c) => (
+                    <option key={c} value={c}>
+                      Target: {c}
+                    </option>
+                  ))}
+                </select>
                 <select
                   value={previewArchetype}
                   onChange={(e) => setPreviewArchetype(e.target.value)}
@@ -651,7 +719,8 @@ export default function AdminDashboard() {
                   onChange={(e) => setPreviewTrigger(e.target.value)}
                   className="rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200"
                 >
-                  <option value="manual">Manual Trigger</option>
+                  <option value="manual">Manual</option>
+                  <option value="lineup">Simulate Lineup</option>
                   <option value="halftime">Simulate Half-Time</option>
                   <option value="fulltime">Simulate Full-Time</option>
                 </select>
@@ -669,6 +738,9 @@ export default function AdminDashboard() {
             {previewResult && (
               <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/80 p-4">
                 <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="rounded-full bg-[#edbb00]/20 px-2.5 py-0.5 font-semibold text-[#edbb00]">
+                    Target: {previewResult.target_club || previewClub}
+                  </span>
                   <span
                     className={`rounded-full px-2.5 py-0.5 font-semibold ${
                       previewResult.gemini_key_used === "primary"
@@ -689,68 +761,36 @@ export default function AdminDashboard() {
                   )}
                 </div>
                 <p className="whitespace-pre-wrap text-sm leading-relaxed text-white">{previewResult.text}</p>
-                {previewResult.gemini_fallback_reason && (
-                  <p className="mt-2 text-xs text-amber-300">
-                    Fallback reason: {previewResult.gemini_fallback_reason}
-                  </p>
-                )}
               </div>
             )}
           </div>
-
-          {/* Live Match Radar */}
-          {(barcaMatches.length > 0 || rivalMatches.length > 0) && (
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-4">
-                <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-sky-400">Barça Match Radar</h3>
-                {barcaMatches.length === 0 ? (
-                  <p className="text-xs text-slate-400">No Barça match in the immediate 48-hour scoreboard window.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {barcaMatches.map((m, idx) => (
-                      <div key={idx} className="flex items-center justify-between rounded-xl bg-slate-950/70 px-3 py-2 text-xs">
-                        <span className="font-medium text-white">
-                          [{m.competition}] {m.homeTeam} {m.homeScore ?? "vs"} {m.awayScore ?? ""} {m.awayTeam}
-                        </span>
-                        <span className="rounded-md bg-[#004d98]/40 px-2 py-0.5 text-[11px] text-sky-200">{m.detail}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-4">
-                <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-rose-400">Rival Slander Radar</h3>
-                {rivalMatches.length === 0 ? (
-                  <p className="text-xs text-slate-400">No tracked rival matches in window.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {rivalMatches.slice(0, 4).map((m, idx) => (
-                      <div key={idx} className="flex items-center justify-between rounded-xl bg-slate-950/70 px-3 py-2 text-xs">
-                        <span className="text-slate-200">
-                          [{m.competition}] {m.homeTeam} {m.homeScore ?? "vs"} {m.awayScore ?? ""} {m.awayTeam}
-                        </span>
-                        <span className="rounded-md bg-slate-800 px-2 py-0.5 text-[11px] text-slate-300">{m.detail}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
 
           {/* Post & API Key Activity Feed */}
           <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5">
             <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h2 className="text-base font-bold text-white">Posting & Gemini API Key Activity</h2>
-                <p className="text-xs text-slate-400">Every live post and dry-run with Primary vs Fallback key tracking</p>
+                <h2 className="text-base font-bold text-white">Posting Activity by Club & Gemini Key</h2>
+                <p className="text-xs text-slate-400">
+                  Every post tagged with Target Club, Workflow Slot, Gemini Key, and free inline reach logging
+                </p>
               </div>
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={clubFilter}
+                  onChange={(e) => setClubFilter(e.target.value)}
+                  className="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200"
+                >
+                  <option value="all">All Clubs</option>
+                  {availableClubNames.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
                 {[
                   { id: "all" as const, label: `All (${posts.length})` },
                   { id: "live" as const, label: "Live X" },
-                  { id: "match" as const, label: "HT / FT" },
+                  { id: "match" as const, label: "Matchday / Thu" },
                   { id: "fallback" as const, label: "Fallback Key" },
                   { id: "dry" as const, label: "Dry Runs" },
                 ].map((f) => (
@@ -782,7 +822,14 @@ export default function AdminDashboard() {
                   >
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-semibold">
-                        {/* Gemini Key Telemetry Pill */}
+                        <span className="rounded-full bg-[#edbb00]/15 px-2.5 py-0.5 text-[#edbb00] ring-1 ring-[#edbb00]/30">
+                          {post.target_club}
+                        </span>
+
+                        <span className="rounded-full bg-[#a50044]/25 px-2.5 py-0.5 text-rose-200">
+                          {post.workflow_slot}
+                        </span>
+
                         <span
                           className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 ${
                             post.gemini_key_used === "fallback"
@@ -794,32 +841,22 @@ export default function AdminDashboard() {
                           {post.gemini_key_used === "fallback" ? "Key #2 FALLBACK" : "Key #1 PRIMARY"}
                         </span>
 
-                        {/* Trigger Badge */}
-                        <span
-                          className={`rounded-full px-2.5 py-0.5 uppercase ${
-                            post.trigger_type === "halftime" || post.trigger_type === "fulltime"
-                              ? "bg-[#a50044]/30 text-rose-200 ring-1 ring-rose-500/40"
-                              : "bg-slate-800 text-slate-300"
-                          }`}
-                        >
-                          {post.trigger_type}
-                        </span>
-
-                        <span className="rounded-full bg-[#004d98]/30 px-2.5 py-0.5 text-sky-200">{post.archetype}</span>
-
-                        {post.gemini_model && (
-                          <span className="rounded-full bg-slate-800/90 px-2 py-0.5 font-normal text-slate-400">
-                            {post.gemini_model}
-                          </span>
-                        )}
-
                         {post.dry_run && (
                           <span className="rounded-full bg-purple-500/20 px-2 py-0.5 text-purple-300">DRY RUN</span>
                         )}
                       </div>
 
-                      <div className="flex items-center gap-2 text-xs text-slate-400">
+                      <div className="flex items-center gap-3 text-xs text-slate-400">
                         <span title={post.created_at_utc}>{formatRelativeTime(post.created_at_utc)}</span>
+                        {!post.dry_run && (
+                          <button
+                            onClick={() => startEditMetrics(post)}
+                            className="inline-flex items-center gap-1 rounded-lg bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+                          >
+                            <Pencil className="h-3 w-3" />
+                            Log Reach
+                          </button>
+                        )}
                         {!post.dry_run && post.tweet_id && post.tweet_id !== "dry-run" && (
                           <a
                             href={`https://x.com/i/web/status/${post.tweet_id}`}
@@ -835,13 +872,61 @@ export default function AdminDashboard() {
 
                     <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-100">{post.text}</p>
 
-                    <div className="mt-2.5 flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
-                      {post.match_label && <span>Match: {post.match_label}</span>}
+                    {/* Metrics Display Bar */}
+                    {!post.dry_run && (post.impressions > 0 || post.likes > 0 || post.replies > 0) && (
+                      <div className="mt-2.5 flex flex-wrap gap-4 text-xs text-slate-300">
+                        <span>👁️ <strong>{post.impressions.toLocaleString()}</strong> views</span>
+                        <span>❤️ <strong>{post.likes}</strong> likes</span>
+                        <span>💬 <strong>{post.replies}</strong> replies</span>
+                        <span>🔁 <strong>{post.retweets + post.quotes}</strong> RTs/quotes</span>
+                      </div>
+                    )}
+
+                    {/* Free Inline Reach Entry Form */}
+                    {editingMetricsId === post.id && (
+                      <div className="mt-3 flex flex-wrap items-end gap-2 rounded-xl border border-slate-700 bg-slate-900 p-3">
+                        {[
+                          { k: "impressions" as const, label: "Views" },
+                          { k: "likes" as const, label: "Likes" },
+                          { k: "replies" as const, label: "Replies" },
+                          { k: "retweets" as const, label: "Reposts" },
+                          { k: "quotes" as const, label: "Quotes" },
+                        ].map((field) => (
+                          <div key={field.k}>
+                            <label className="mb-0.5 block text-[10px] text-slate-400">{field.label}</label>
+                            <input
+                              type="number"
+                              min={0}
+                              value={metricsDraft[field.k]}
+                              onChange={(e) => setMetricsDraft({ ...metricsDraft, [field.k]: Number(e.target.value) })}
+                              className="w-20 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white"
+                            />
+                          </div>
+                        ))}
+                        <button
+                          onClick={() => void handleSaveMetrics(post.id)}
+                          disabled={savingMetrics}
+                          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                        >
+                          {savingMetrics ? "Saving..." : "Save"}
+                        </button>
+                        <button
+                          onClick={() => setEditingMetricsId(null)}
+                          className="rounded-lg bg-slate-800 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-slate-700"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
+                      <span>Archetype: {post.archetype}</span>
+                      {post.match_label && <span>· {post.match_label}</span>}
                       {post.image_ids.length > 0 && (
-                        <span className="text-sky-300">Images: {post.image_ids.join(", ")}</span>
+                        <span className="text-sky-300">· Images: {post.image_ids.join(", ")}</span>
                       )}
                       {post.gemini_fallback_reason && (
-                        <span className="text-amber-300">Primary fail reason: {post.gemini_fallback_reason}</span>
+                        <span className="text-amber-300">· Primary fail: {post.gemini_fallback_reason}</span>
                       )}
                     </div>
                   </div>
@@ -852,13 +937,178 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* ==================== TAB 2: POSTING BEHAVIOR CONTROLS ==================== */}
+      {/* ==================== TAB 2: CLUB REACH & ANALYTICS ==================== */}
+      {tab === "analytics" && (
+        <div className="space-y-6">
+          {/* Free API Transparency Notice */}
+          <div className="rounded-2xl border border-sky-500/30 bg-sky-500/10 p-4 text-xs text-sky-100">
+            <p className="font-bold text-sky-300">Zero-Cost Analytics Mode Active ($0.00 X Read Spend)</p>
+            <p className="mt-1 text-sky-200/90">
+              X API Pay-Per-Use charges <strong>$0.001 per tweet read</strong> (there is no free metrics-read endpoint),
+              so automatic polling is intentionally <strong>OFF</strong> to protect your $10 posting balance. Click{" "}
+              <strong>Log Reach</strong> on any live post in the Activity tab to punch in Views / Likes / Replies from
+              your X app for free — this leaderboard updates instantly to show which rival club drives the highest reach!
+            </p>
+          </div>
+
+          {/* Workflow Calendar & Weekly Pace Summary */}
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5">
+              <h2 className="text-sm font-bold text-white">Weekly Posting Budget (~26 ± 4 / week)</h2>
+              <div className="mt-3 flex items-baseline gap-2">
+                <span className="text-3xl font-black text-white">{stats.postsLast7Days}</span>
+                <span className="text-sm text-slate-400">/ {config.weekly_post_target} posts in last 7 days</span>
+              </div>
+              <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-slate-800">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-[#004d98] to-[#a50044]"
+                  style={{ width: `${Math.min(100, Math.round((stats.postsLast7Days / Math.max(1, config.weekly_post_target)) * 100))}%` }}
+                />
+              </div>
+              <p className="mt-2 text-xs text-slate-400">
+                Current 7-day daily average: <strong className="text-white">{stats.dailyAvg7d.toFixed(2)} posts/day</strong>{" "}
+                (target cap ≤ 3.71/day). Non-matchdays auto-throttle between {config.non_matchday_min_posts} and{" "}
+                {config.non_matchday_max_posts} posts/day to stay on pace.
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 text-xs text-slate-300">
+              <h2 className="mb-2 text-sm font-bold text-white">Active Automated Workflow Rules</h2>
+              <ul className="space-y-1.5">
+                <li>
+                  <strong className="text-sky-300">Barça Matchday:</strong> 8h pre-match (1) → Lineup (1) → HT (1) → FT (1 win / 3 draw-loss) = <strong>4 or 6 posts</strong>
+                </li>
+                <li>
+                  <strong className="text-rose-300">Real Madrid Matchday:</strong> Lineup (1) → FT (2 discrediting win OR 2 mocking loss) = <strong>3 posts</strong>
+                </li>
+                <li>
+                  <strong className="text-[#edbb00]">Every Thursday:</strong> Checks Tue/Wed UCL → if EPL lost, fires <strong>1 Intensity League roast</strong>
+                </li>
+                <li>
+                  <strong className="text-emerald-300">Non-Matchdays:</strong> 1–3 posts rotating 1–2 Big-8 clubs/day (Atleti, PSG, Liverpool, Man City, Bayern, Arsenal, Man Utd, Chelsea)
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          {/* Club Reach Leaderboard */}
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5">
+            <h2 className="mb-1 text-base font-bold text-white">Posts & Reach Performance by Target Club</h2>
+            <p className="mb-4 text-xs text-slate-400">
+              Compare how many posts targeted each club and which rival triggers the highest average impressions & replies
+            </p>
+
+            {clubAnalytics.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-800 py-10 text-center text-sm text-slate-400">
+                No club data logged yet. Posts published by Heroku (and dry-runs) appear here automatically.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-slate-400">
+                      <th className="pb-2.5 pr-4 font-semibold">Target Club</th>
+                      <th className="pb-2.5 pr-4 font-semibold">Live Posts</th>
+                      <th className="pb-2.5 pr-4 font-semibold">Dry Runs</th>
+                      <th className="pb-2.5 pr-4 font-semibold">Total Views</th>
+                      <th className="pb-2.5 pr-4 font-semibold">Avg Views / Post</th>
+                      <th className="pb-2.5 pr-4 font-semibold">Likes · Replies · RTs</th>
+                      <th className="pb-2.5 font-semibold">Relative Reach</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/70">
+                    {clubAnalytics.map((row) => {
+                      const barVal = row.avgImpressions > 0 ? row.avgImpressions : row.livePosts;
+                      const pct = Math.min(100, Math.round((barVal / maxClubAvgImpressions) * 100));
+                      return (
+                        <tr key={row.club} className="hover:bg-slate-950/60">
+                          <td className="py-3 pr-4 font-bold text-white">
+                            <button
+                              onClick={() => {
+                                setClubFilter(row.club);
+                                setTab("activity");
+                              }}
+                              className="hover:text-[#edbb00] hover:underline"
+                            >
+                              {row.club}
+                            </button>
+                          </td>
+                          <td className="py-3 pr-4 font-semibold text-emerald-300">{row.livePosts}</td>
+                          <td className="py-3 pr-4 text-slate-400">{row.dryPosts}</td>
+                          <td className="py-3 pr-4 text-white">{row.totalImpressions.toLocaleString()}</td>
+                          <td className="py-3 pr-4 font-bold text-[#edbb00]">
+                            {row.measuredPosts > 0 ? row.avgImpressions.toLocaleString() : "—"}
+                          </td>
+                          <td className="py-3 pr-4 text-slate-300">
+                            {row.totalLikes} · {row.totalReplies} · {row.totalRetweets}
+                          </td>
+                          <td className="w-40 py-3">
+                            <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
+                              <div
+                                className="h-full rounded-full bg-gradient-to-r from-[#004d98] to-[#edbb00]"
+                                style={{ width: `${Math.max(4, pct)}%` }}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Live Match Radar */}
+          {(barcaMatches.length > 0 || rivalMatches.length > 0) && (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-4">
+                <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-sky-400">Barça Match Radar</h3>
+                {barcaMatches.length === 0 ? (
+                  <p className="text-xs text-slate-400">No Barça match in the immediate 48h window.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {barcaMatches.map((m, idx) => (
+                      <div key={idx} className="flex items-center justify-between rounded-xl bg-slate-950/70 px-3 py-2 text-xs">
+                        <span className="font-medium text-white">
+                          [{m.competition}] {m.homeTeam} {m.homeScore ?? "vs"} {m.awayScore ?? ""} {m.awayTeam}
+                        </span>
+                        <span className="rounded-md bg-[#004d98]/40 px-2 py-0.5 text-[11px] text-sky-200">{m.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-4">
+                <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-rose-400">Madrid & Big-8 Radar</h3>
+                {rivalMatches.length === 0 ? (
+                  <p className="text-xs text-slate-400">No tracked rival matches in window.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {rivalMatches.slice(0, 5).map((m, idx) => (
+                      <div key={idx} className="flex items-center justify-between rounded-xl bg-slate-950/70 px-3 py-2 text-xs">
+                        <span className="text-slate-200">
+                          [{m.competition}] {m.homeTeam} {m.homeScore ?? "vs"} {m.awayScore ?? ""} {m.awayTeam}
+                        </span>
+                        <span className="rounded-md bg-slate-800 px-2 py-0.5 text-[11px] text-slate-300">{m.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ==================== TAB 3: POSTING WORKFLOW & BEHAVIOR CONTROLS ==================== */}
       {tab === "controls" && (
         <div className="space-y-6">
           <div className="grid gap-6 lg:grid-cols-2">
             {/* Core Switches & Match Triggers */}
             <div className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/75 p-5">
-              <h2 className="text-base font-bold text-white">Master Controls & Live Match Triggers</h2>
+              <h2 className="text-base font-bold text-white">Master Controls & Matchday Triggers</h2>
 
               {[
                 {
@@ -872,24 +1122,24 @@ export default function AdminDashboard() {
                   desc: "Generates posts & logs them to Activity without actually publishing to X.",
                 },
                 {
+                  key: "auto_post_prematch" as const,
+                  title: "Barça Pre-Match (8h) + Lineup (~1h)",
+                  desc: "Bragging trash talk 8h before KO & again when official Starting XI drops.",
+                },
+                {
                   key: "auto_post_halftime" as const,
-                  title: "Instant Half-Time Trigger (HT)",
-                  desc: "Fires a spicy reaction immediately when ESPN detects Barça Half-Time.",
+                  title: "Barça Instant Half-Time Trigger (HT)",
+                  desc: "Brags if winning; instant meltdown ('send Gordon back', 'Flick out') if trailing/tied.",
                 },
                 {
                   key: "auto_post_fulltime" as const,
-                  title: "Instant Full-Time Trigger (FT + Post-Match News)",
-                  desc: "Pulls breaking Barça post-match news right after the whistle & posts immediately.",
-                },
-                {
-                  key: "auto_post_prematch" as const,
-                  title: "Pre-Match Delusion Window",
-                  desc: "Switches to overconfident hype & scoreline predictions before kickoff.",
+                  title: "Barça Full-Time Trigger (1 Win / 3 Draw-Loss)",
+                  desc: "Pulls live post-match news: 1 win brag or 3 spaced frustration meltdowns.",
                 },
                 {
                   key: "auto_post_rival_drama" as const,
-                  title: "Rival Drama Focus",
-                  desc: "Targets Real Madrid / Atlético / UCL rivals when they play or drop points.",
+                  title: "Real Madrid Matchday (Lineup + 2 FT) & Thu UCL",
+                  desc: "Mocks Madrid XI + 2 FT posts (discrediting wins or gloating losses).",
                 },
               ].map((item) => (
                 <label
@@ -910,27 +1160,53 @@ export default function AdminDashboard() {
               ))}
             </div>
 
-            {/* Cadence, Chaos, Model & Custom Directive */}
+            {/* Weekly Budget, Chaos & Gemini Tuning */}
             <div className="space-y-5 rounded-2xl border border-slate-800 bg-slate-900/75 p-5">
-              <h2 className="text-base font-bold text-white">Cadence, Chaos Level & Gemini Tuning</h2>
+              <h2 className="text-base font-bold text-white">Weekly Budget, Chaos & Gemini Tuning</h2>
 
               <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-300">Max Posts / Day</label>
+                  <label className="mb-1 block text-xs font-medium text-slate-300">Weekly Target</label>
                   <input
                     type="number"
-                    min={1}
-                    max={15}
-                    value={config.max_posts_per_day}
-                    onChange={(e) => setConfig({ ...config, max_posts_per_day: Number(e.target.value) })}
+                    min={7}
+                    max={70}
+                    value={config.weekly_post_target}
+                    onChange={(e) => setConfig({ ...config, weekly_post_target: Number(e.target.value) })}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+                  />
+                  <p className="mt-0.5 text-[10px] text-slate-500">Default: 26 (≤3.71/d)</p>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-300">Off-Day Min</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={5}
+                    value={config.non_matchday_min_posts}
+                    onChange={(e) => setConfig({ ...config, non_matchday_min_posts: Number(e.target.value) })}
                     className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-300">Quiet Cooldown (m)</label>
+                  <label className="mb-1 block text-xs font-medium text-slate-300">Off-Day Max</label>
                   <input
                     type="number"
-                    min={15}
+                    min={1}
+                    max={6}
+                    value={config.non_matchday_max_posts}
+                    onChange={(e) => setConfig({ ...config, non_matchday_max_posts: Number(e.target.value) })}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-300">Off-Day Cooldown (min)</label>
+                  <input
+                    type="number"
+                    min={30}
                     max={720}
                     value={config.min_minutes_between_posts}
                     onChange={(e) => setConfig({ ...config, min_minutes_between_posts: Number(e.target.value) })}
@@ -938,31 +1214,19 @@ export default function AdminDashboard() {
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-300">Match Cooldown (m)</label>
-                  <input
-                    type="number"
-                    min={10}
-                    max={240}
-                    value={config.matchday_cooldown_minutes}
-                    onChange={(e) => setConfig({ ...config, matchday_cooldown_minutes: Number(e.target.value) })}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
-                  />
+                  <label className="mb-1 block text-xs font-medium text-slate-300">Image Attachment Ratio</label>
+                  <div className="flex items-center gap-2 pt-2">
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={Math.round(config.image_post_ratio * 100)}
+                      onChange={(e) => setConfig({ ...config, image_post_ratio: Number(e.target.value) / 100 })}
+                      className="w-full accent-[#004d98]"
+                    />
+                    <span className="text-xs font-bold text-[#edbb00]">{Math.round(config.image_post_ratio * 100)}%</span>
+                  </div>
                 </div>
-              </div>
-
-              <div>
-                <div className="mb-1 flex justify-between text-xs">
-                  <span className="font-medium text-slate-300">Image Attachment Ratio</span>
-                  <span className="font-bold text-[#edbb00]">{Math.round(config.image_post_ratio * 100)}%</span>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={Math.round(config.image_post_ratio * 100)}
-                  onChange={(e) => setConfig({ ...config, image_post_ratio: Number(e.target.value) / 100 })}
-                  className="w-full accent-[#004d98]"
-                />
               </div>
 
               <div>
@@ -1017,24 +1281,20 @@ export default function AdminDashboard() {
                   rows={3}
                   value={config.custom_directive}
                   onChange={(e) => setConfig({ ...config, custom_directive: e.target.value })}
-                  placeholder="e.g. Push Pedri Ballon d'Or agenda this week and roast Real Madrid's defense..."
+                  placeholder="e.g. Push Pedri Ballon d'Or agenda and cook Arsenal & Man City extra hard..."
                   className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm text-white outline-none focus:border-[#004d98]"
                 />
               </div>
             </div>
           </div>
 
-          {/* 24-Hour UTC Posting Slots */}
+          {/* 24-Hour UTC Posting Slots for Off-Days */}
           <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h3 className="text-sm font-bold text-white">Off-Day Posting Hours (UTC)</h3>
-                <p className="text-xs text-slate-400">
-                  Selected: {config.post_hours_utc.length} slots/day (IST = UTC + 5:30). HT/FT match triggers always fire
-                  immediately outside these hours.
-                </p>
-              </div>
-            </div>
+            <h3 className="text-sm font-bold text-white">Non-Matchday Posting Hours (UTC)</h3>
+            <p className="mb-3 text-xs text-slate-400">
+              Default <code>06, 11, 16</code> UTC = 11:30 AM, 4:30 PM, 9:30 PM IST. Matchday triggers (8h pre-match,
+              lineup, HT, FT) and Thursday UCL fire automatically outside these hours.
+            </p>
             <div className="grid grid-cols-6 gap-2 sm:grid-cols-12">
               {Array.from({ length: 24 }, (_, hour) => {
                 const selected = config.post_hours_utc.includes(hour);
@@ -1061,40 +1321,6 @@ export default function AdminDashboard() {
             </div>
           </div>
 
-          {/* Enabled Archetypes */}
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5">
-            <h3 className="mb-3 text-sm font-bold text-white">Enabled Post Archetypes</h3>
-            <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
-              {ARCHETYPES.map((arch) => {
-                const checked = config.enabled_archetypes.includes(arch.id);
-                return (
-                  <label
-                    key={arch.id}
-                    className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition ${
-                      checked ? "border-[#004d98]/70 bg-[#004d98]/15" : "border-slate-800 bg-slate-950/60"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(e) => {
-                        const next = e.target.checked
-                          ? [...config.enabled_archetypes, arch.id]
-                          : config.enabled_archetypes.filter((x) => x !== arch.id);
-                        setConfig({ ...config, enabled_archetypes: next });
-                      }}
-                      className="mt-0.5 h-4 w-4 accent-[#a50044]"
-                    />
-                    <div>
-                      <p className="text-xs font-bold text-white">{arch.label}</p>
-                      <p className="text-[11px] text-slate-400">{arch.desc}</p>
-                    </div>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-
           {/* Save Bar */}
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/90 p-4">
             <span className="text-xs text-slate-400">
@@ -1112,29 +1338,24 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* ==================== TAB 3: GITHUB IMAGE LIBRARY & UPLOADER ==================== */}
+      {/* ==================== TAB 4: GITHUB IMAGE LIBRARY & UPLOADER ==================== */}
       {tab === "images" && (
         <div className="space-y-6">
-          {/* Upload Form */}
           <form
             onSubmit={handleUploadImage}
             className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 shadow-xl"
           >
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 className="flex items-center gap-2 text-base font-bold text-white">
-                  <Upload className="h-4 w-4 text-[#edbb00]" />
-                  Upload Player / Rival Image to GitHub
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Commits directly to{" "}
-                  <code className="text-sky-300">
-                    {githubMeta.repo || "GITHUB_REPO"}/{githubMeta.branch}/assets/images/
-                  </code>{" "}
-                  and updates <code>assets/catalog.json</code> — Heroku picks it up automatically with zero redeploy!
-                </p>
-              </div>
-            </div>
+            <h2 className="flex items-center gap-2 text-base font-bold text-white">
+              <Upload className="h-4 w-4 text-[#edbb00]" />
+              Upload Player / Rival Image to GitHub
+            </h2>
+            <p className="mb-4 text-xs text-slate-400">
+              Commits directly to{" "}
+              <code className="text-sky-300">
+                {githubMeta.repo || "GITHUB_REPO"}/{githubMeta.branch}/assets/images/
+              </code>{" "}
+              and updates <code>assets/catalog.json</code> — Heroku picks it up automatically with zero redeploy!
+            </p>
 
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <div>
@@ -1164,7 +1385,7 @@ export default function AdminDashboard() {
                   type="text"
                   value={uploadSubject}
                   onChange={(e) => setUploadSubject(e.target.value)}
-                  placeholder="e.g. Lamine Yamal, Vinicius Jr"
+                  placeholder="e.g. Lamine Yamal, Vinicius Jr, Haaland"
                   className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
                   required
                 />
@@ -1176,7 +1397,7 @@ export default function AdminDashboard() {
                   type="text"
                   value={uploadClub}
                   onChange={(e) => setUploadClub(e.target.value)}
-                  placeholder="e.g. FC Barcelona, Real Madrid"
+                  placeholder="e.g. FC Barcelona, Arsenal, Real Madrid"
                   className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
                 />
               </div>
@@ -1206,7 +1427,7 @@ export default function AdminDashboard() {
                   type="text"
                   value={uploadDescription}
                   onChange={(e) => setUploadDescription(e.target.value)}
-                  placeholder="e.g. Lamine Yamal doing the 304 celebration after scoring"
+                  placeholder="e.g. Haaland frustrated after City dropped points in Europe"
                   className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
                 />
               </div>
@@ -1235,7 +1456,6 @@ export default function AdminDashboard() {
             </div>
           </form>
 
-          {/* Image Library Grid */}
           <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-base font-bold text-white">Stored GitHub Images ({filteredImages.length})</h3>
@@ -1256,9 +1476,7 @@ export default function AdminDashboard() {
 
             {filteredImages.length === 0 ? (
               <div className="rounded-xl border border-dashed border-slate-800 py-12 text-center text-sm text-slate-400">
-                {githubMeta.configured
-                  ? "No images in this category yet. Upload your first Barça or rival photo above!"
-                  : "Set GITHUB_REPO and GITHUB_TOKEN in Vercel env vars to browse & upload GitHub images."}
+                No images in this category yet.
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -1268,7 +1486,6 @@ export default function AdminDashboard() {
                     className="group overflow-hidden rounded-xl border border-slate-800 bg-slate-950/80 transition hover:border-slate-600"
                   >
                     <div className="relative aspect-[4/3] w-full overflow-hidden bg-slate-900">
-                      {/* Authenticated proxy works for both public and private GitHub repos */}
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={`/api/images/raw?path=${encodeURIComponent(img.repo_path)}`}

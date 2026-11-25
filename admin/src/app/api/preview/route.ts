@@ -13,6 +13,7 @@ export async function POST(req: Request) {
     const body = (await req.json().catch(() => ({}))) as {
       archetype?: string;
       trigger_type?: string;
+      target_club?: string;
     };
 
     const [{ config }, liveMatches, images] = await Promise.all([
@@ -21,13 +22,15 @@ export async function POST(req: Request) {
       isGitHubConfigured() ? listGitHubImages().catch(() => []) : Promise.resolve([]),
     ]);
 
-    const archetype = body.archetype || config.enabled_archetypes[0] || "rival_comparison_bait";
+    const archetype = body.archetype || config.enabled_archetypes[0] || "epl_intensity_slander";
     const triggerType = body.trigger_type || "manual";
+    const targetClub = body.target_club || "Arsenal";
 
     const result = await generatePreviewPost({
       behavior: config,
       archetype,
       triggerType,
+      targetClub,
       barcaMatches: liveMatches.barcaMatches,
       rivalMatches: liveMatches.rivalMatches,
       images,
@@ -52,9 +55,11 @@ export async function POST(req: Request) {
       gemini_model: result.gemini_model,
       search_grounded: false,
       match_label: matchLabel,
+      target_club: targetClub,
+      workflow_slot: "admin_preview",
     });
 
-    return NextResponse.json({ preview: result });
+    return NextResponse.json({ preview: { ...result, target_club: targetClub } });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Preview generation failed" },

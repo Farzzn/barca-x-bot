@@ -1,14 +1,13 @@
-"""CLI & Heroku Scheduler entrypoint for the Barca X Auto-Poster.
+"""CLI & Heroku Scheduler entrypoint for the Barca X Auto-Poster (Workflow v2).
 
-Recommended Heroku Scheduler job (Every 10 minutes — catches every Half-Time & Full-Time!):
+Recommended Heroku Scheduler job (Every 10 minutes):
     python run_post.py
 
 Useful local commands:
     python run_post.py --check                      # Preflight check (keys, DB, GitHub, ESPN)
-    python run_post.py --test-context               # Show live Barca/rival scores & mood state
-    python run_post.py --sync-catalog               # Sync local/GitHub images -> assets/catalog.json
+    python run_post.py --test-workflow              # Inspect exact matchday/Thursday/weekly decision
+    python run_post.py --test-context               # Show live Barca/Madrid/UCL scores & lineups
     python run_post.py --dry-run --force-now        # Generate a sample post without posting to X
-    python run_post.py --dry-run --force-now --trigger fulltime
 """
 
 from __future__ import annotations
@@ -24,7 +23,8 @@ from app.context_fetcher import fetch_live_context
 from app.generator import PostGenerator
 from app.image_catalog import ImageCatalog
 from app.persona import ARCHETYPES
-from app.storage import HistoryStore, decide_run_action
+from app.storage import HistoryStore
+from app.workflow import evaluate_workflow
 from app.x_client import XClient
 
 
@@ -38,49 +38,15 @@ def configure_logging(level_name: str) -> None:
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Barca Football Twitter LLM Auto-Poster")
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Generate post(s) and log them locally without calling X API.",
-    )
-    parser.add_argument(
-        "--force-now",
-        action="store_true",
-        help="Bypass POST_HOURS_UTC, daily cap, pause switch, and cooldown checks.",
-    )
-    parser.add_argument(
-        "--archetype",
-        choices=sorted(ARCHETYPES.keys()),
-        default=None,
-        help="Force a specific banter archetype instead of auto-selecting by match state.",
-    )
-    parser.add_argument(
-        "--trigger",
-        choices=["scheduled", "halftime", "fulltime", "matchday", "manual"],
-        default=None,
-        help="Override trigger_type label (useful for testing HT/FT prompts in --dry-run).",
-    )
-    parser.add_argument(
-        "--count",
-        type=int,
-        default=1,
-        help="Number of posts to generate (only >1 allowed with --dry-run).",
-    )
-    parser.add_argument(
-        "--test-context",
-        action="store_true",
-        help="Fetch and display live Barca/rival match context and exit.",
-    )
-    parser.add_argument(
-        "--sync-catalog",
-        action="store_true",
-        help="Scan local/GitHub images and write assets/catalog.json, then exit.",
-    )
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Run a preflight health check on env vars, DB, GitHub image catalog, and live feeds.",
-    )
+    parser.add_argument("--dry-run", action="store_true", help="Generate post(s) without posting to X.")
+    parser.add_argument("--force-now", action="store_true", help="Bypass schedule checks for manual testing.")
+    parser.add_argument("--archetype", choices=sorted(ARCHETYPES.keys()), default=None)
+    parser.add_argument("--target-club", default=None, help="Override target_club when testing with --force-now.")
+    parser.add_argument("--count", type=int, default=1)
+    parser.add_argument("--test-context", action="store_true", help="Print live ESPN/RSS context and exit.")
+    parser.add_argument("--test-workflow", action="store_true", help="Print exact workflow decision and exit.")
+    parser.add_argument("--sync-catalog", action="store_true", help="Sync images -> assets/catalog.json and exit.")
+    parser.add_argument("--check", action="store_true", help="Run preflight health check and exit.")
     return parser.parse_args(argv)
 
 
@@ -106,30 +72,31 @@ def main(argv: List[str] | None = None) -> int:
         for asset in catalog.assets.values():
             source = "GitHub" if asset.github_repo_path else "Local"
             print(f"  - [{source}] {asset.id}: {asset.description} [{asset.relative_path}]")
-        if not catalog.assets:
-            print("  (No images yet — upload via Admin UI or drop photos into assets/images/barca/ or rivals/)")
         return 0
 
     if args.check:
         store = HistoryStore(settings)
         behavior = store.get_behavior_config(settings.default_behavior())
-        print("=== Barca X Bot Preflight Check ===")
+        ctx = fetch_live_context()
+        decision = evaluate_workflow(behavior, store, ctx)
+        posts_7d = store.count_posts_rolling_days(7)
+        print("=== Barca X Bot Preflight Check (Workflow v2) ===")
         print(f"Gemini Key #1:    {'SET' if settings.gemini_api_key else 'MISSING'}")
-        print(f"Gemini Key #2:    {'SET (fallback ready)' if settings.gemini_api_key_fallback else 'NOT SET (optional fallback)'}")
+        print(f"Gemini Key #2:    {'SET (fallback ready)' if settings.gemini_api_key_fallback else 'NOT SET'}")
         print(f"Gemini Model:     {behavior.gemini_model} (Google Search={behavior.enable_google_search})")
         print(f"X API Keys:       {'SET (all 4)' if settings.has_x_credentials else 'MISSING (dry-run only)'}")
-        print(f"GitHub Images:    {settings.github_repo + '@' + settings.github_branch if settings.has_github_images else 'Local folder only'}")
+        print(f"GitHub Images:    {settings.github_repo + '@' + settings.github_branch if settings.has_github_images else 'Local only'}")
         print(f"Database Mode:    {'PostgreSQL (DATABASE_URL)' if settings.database_url else f'Local SQLite ({settings.sqlite_path})'}")
         print(f"Bot Status:       {'ENABLED' if behavior.bot_enabled else 'PAUSED'} | dry_run={behavior.dry_run} | chaos={behavior.chaos_level}")
-        print(f"Match Triggers:   HT={behavior.auto_post_halftime} | FT={behavior.auto_post_fulltime} | Pre={behavior.auto_post_prematch} | Rival={behavior.auto_post_rival_drama}")
-        print(f"Daily Schedule:   max {behavior.max_posts_per_day}/day | POST_HOURS_UTC={behavior.post_hours_utc}")
+        print(f"Weekly Budget:    {posts_7d}/{behavior.weekly_post_target} posts in last 7d (avg {posts_7d / 7.0:.2f}/day; target <= 3.71/day)")
+        print(f"Off-day Bounds:   min={behavior.non_matchday_min_posts}, max={behavior.non_matchday_max_posts} | slots UTC={behavior.post_hours_utc}")
         by_cat: dict[str, int] = {}
         for a in catalog.assets.values():
             by_cat[a.category] = by_cat.get(a.category, 0) + 1
         print(f"Image Catalog:    {len(catalog.assets)} total {by_cat if by_cat else '(empty)'}")
-        print(f"DB Connection:    OK ({store.count_posts_today_utc()} live posts today UTC)")
-        ctx = fetch_live_context()
-        print(f"Live Football:    OK (state={ctx.match_state.value}, barca={len(ctx.barca_matches)}, rivals={len(ctx.rival_matches)}, headlines={len(ctx.headlines)})")
+        print(f"Live Football:    barca={len(ctx.barca_matches)}, madrid={len(ctx.madrid_matches)}, ucl_epl_losses={len(ctx.ucl_recent_epl_losses)}")
+        print(f"Workflow Now:     mode={decision.day_mode} | should_post={decision.should_post} | slot={decision.workflow_slot} | target={decision.target_club}")
+        print(f"Reason:           {decision.reason}")
         return 0
 
     context = fetch_live_context()
@@ -139,16 +106,46 @@ def main(argv: List[str] | None = None) -> int:
 
     store = HistoryStore(settings)
     behavior = store.get_behavior_config(settings.default_behavior())
+    decision = evaluate_workflow(behavior, store, context)
+
+    if args.test_workflow:
+        posts_7d = store.count_posts_rolling_days(7)
+        print("=== Barca X Bot Workflow Decision ===")
+        print(f"Day Mode:         {decision.day_mode}")
+        print(f"Should Post Now:  {decision.should_post}")
+        print(f"Workflow Slot:    {decision.workflow_slot} (trigger={decision.trigger_type})")
+        print(f"Target Club:      {decision.target_club}")
+        print(f"Archetype:        {decision.archetype_name}")
+        print(f"7-Day Rolling:    {posts_7d}/{behavior.weekly_post_target} ({posts_7d / 7.0:.2f}/day)")
+        if decision.today_rotation_clubs:
+            print(f"Today's Big-8:    {', '.join(decision.today_rotation_clubs)}")
+        print(f"Reason:           {decision.reason}")
+        if decision.slot_instructions:
+            print(f"Instructions:     {decision.slot_instructions}")
+        return 0
+
     dry_run = args.dry_run or behavior.dry_run or settings.dry_run
 
-    trigger_type = args.trigger or "manual"
-    if not args.force_now:
-        allowed, auto_trigger, reason = decide_run_action(behavior, store, context)
-        if not allowed:
-            logger.info("Skipping this run: %s", reason)
-            return 0
-        trigger_type = args.trigger or auto_trigger
-        logger.info("Proceeding with post [trigger=%s]: %s", trigger_type, reason)
+    if not args.force_now and not decision.should_post:
+        logger.info("Skipping this run [%s]: %s", decision.day_mode, decision.reason)
+        return 0
+
+    if decision.focus_match is not None:
+        context.focus_match = decision.focus_match
+
+    workflow_slot = decision.workflow_slot if decision.should_post else "manual"
+    trigger_type = decision.trigger_type if decision.should_post else "manual"
+    target_club = args.target_club or (decision.target_club if decision.should_post else "FC Barcelona")
+    chosen_archetype = args.archetype or (decision.archetype_name if decision.should_post else None)
+    slot_instructions = decision.slot_instructions if decision.should_post else ""
+
+    logger.info(
+        "Proceeding with post [slot=%s | target=%s | trigger=%s]: %s",
+        workflow_slot,
+        target_club,
+        trigger_type,
+        decision.reason,
+    )
 
     generator = PostGenerator(settings)
     x_client = None if dry_run else XClient(settings)
@@ -172,10 +169,11 @@ def main(argv: List[str] | None = None) -> int:
             recent_archetypes=recent_archetypes,
             behavior=behavior,
             trigger_type=trigger_type,
-            forced_archetype=args.archetype,
+            forced_archetype=chosen_archetype,
+            target_club=target_club,
+            slot_instructions=slot_instructions,
         )
 
-        # Resolve local files (downloading from GitHub on the fly if uploaded via Admin UI!)
         image_paths: List[Path] = []
         valid_image_ids: List[str] = []
         for asset in gen_result.resolved_images:
@@ -184,22 +182,21 @@ def main(argv: List[str] | None = None) -> int:
                 image_paths.append(local_file)
                 valid_image_ids.append(asset.id)
 
-        print("=" * 68)
+        print("=" * 72)
         print(
-            f"Post {idx + 1}/{count} | Trigger: {trigger_type} | State: {context.match_state.value} "
+            f"Post {idx + 1}/{count} | Slot: {workflow_slot} | Target: {target_club} "
             f"| Archetype: {gen_result.archetype.name}"
         )
         print(
             f"Gemini: key={gen_result.gemini_key_used.upper()} | model={gen_result.gemini_model_used} "
-            f"| search={gen_result.search_grounded}"
-            + (f" | fallback_reason={gen_result.gemini_fallback_reason}" if gen_result.gemini_fallback_reason else "")
+            + (f"| fallback_reason={gen_result.gemini_fallback_reason}" if gen_result.gemini_fallback_reason else "")
         )
         print(f"Angle:  {gen_result.post.angle_summary}")
         print(f"Chars:  {len(gen_result.post.text)}/280")
         print(f"Images: {[p.name for p in image_paths] or 'None (text-only)'}")
-        print("-" * 68)
+        print("-" * 72)
         print(gen_result.post.text)
-        print("=" * 68)
+        print("=" * 72)
 
         if dry_run:
             store.record_post(
@@ -216,6 +213,8 @@ def main(argv: List[str] | None = None) -> int:
                 gemini_model=gen_result.gemini_model_used,
                 search_grounded=gen_result.search_grounded,
                 match_label=match_label,
+                target_club=target_club,
+                workflow_slot=workflow_slot,
             )
             logger.info("Dry run complete — nothing posted to X.")
         else:
@@ -235,10 +234,12 @@ def main(argv: List[str] | None = None) -> int:
                 gemini_model=gen_result.gemini_model_used,
                 search_grounded=gen_result.search_grounded,
                 match_label=match_label,
+                target_club=target_club,
+                workflow_slot=workflow_slot,
             )
-            if trigger_type in {"halftime", "fulltime"} and context.focus_match:
-                store.mark_match_event_sent(context.focus_match.match_key, trigger_type)
-            logger.info("Published to X! %s (media_ids=%s)", result.url, result.media_ids)
+            if decision.event_lock and not args.force_now:
+                store.mark_match_event_sent(decision.event_lock[0], decision.event_lock[1])
+            logger.info("Published to X! %s (slot=%s, target=%s)", result.url, workflow_slot, target_club)
 
     return 0
 

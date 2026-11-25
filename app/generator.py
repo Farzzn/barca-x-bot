@@ -31,7 +31,7 @@ from app.persona import (
 logger = logging.getLogger(__name__)
 
 MAX_TWEET_CHARS = 280
-FALLBACK_FAST_MODEL = "gemini-3.5-flash-lite"
+FALLBACK_MODELS = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
 URL_PATTERN = re.compile(r"(https?://\S+|www\.\S+|\b[a-zA-Z0-9-]+\.(com|net|org|io|co|uk|es)\b)", re.IGNORECASE)
 HASHTAG_PATTERN = re.compile(r"#\w+")
 
@@ -182,8 +182,9 @@ class PostGenerator:
         """
         primary_failure_reason = ""
         models_to_try = [preferred_model]
-        if preferred_model != FALLBACK_FAST_MODEL:
-            models_to_try.append(FALLBACK_FAST_MODEL)
+        for fallback_model in FALLBACK_MODELS:
+            if fallback_model not in models_to_try:
+                models_to_try.append(fallback_model)
 
         last_exc: Optional[Exception] = None
 

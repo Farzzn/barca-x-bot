@@ -155,7 +155,7 @@ ${imageMenu}
 Generate ONE punchy Football Twitter X post in JSON (<=270 chars, 0 hashtags, 0 URLs, 0 emojis).`;
 
   const preferred = params.behavior.gemini_model || "gemini-3.5-flash-lite";
-  const models = preferred === "gemini-3.5-flash-lite" ? [preferred] : [preferred, "gemini-3.5-flash-lite"];
+  const models = Array.from(new Set([preferred, "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]));
 
   let primaryFailureReason = "";
   let lastError: unknown = null;
